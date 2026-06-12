@@ -1,0 +1,13 @@
+.git
+.next
+node_modules
+uploads
+data
+*.log
+.env
+.env.local
+.env.production
+.env*.local
+playwright-report
+test-results
+tsconfig.tsbuildinfo

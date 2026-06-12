@@ -75,7 +75,7 @@ export function VisibilitySelector({
           variant="outline"
         >
           {selectedVisibility?.icon}
-          <span className="md:sr-only">{selectedVisibility?.label}</span>
+          <span>{selectedVisibility?.label}</span>
           <ChevronDownIcon />
         </Button>
       </DropdownMenuTrigger>

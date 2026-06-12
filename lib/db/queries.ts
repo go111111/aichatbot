@@ -49,6 +49,15 @@ const memoryDb = {
   streams: [] as { id: string; chatId: string; createdAt: Date }[],
 };
 
+type ChatIdInput = {
+  id?: string;
+  conversationId?: string;
+};
+
+function resolveChatId({ id, conversationId }: ChatIdInput) {
+  return conversationId ?? id;
+}
+
 export async function getUser(email: string): Promise<User[]> {
   if (useMemoryDb) {
     return memoryDb.users.filter((currentUser) => currentUser.email === email);
@@ -136,9 +145,11 @@ export async function saveChat({
   visibility: VisibilityType;
 }) {
   if (useMemoryDb) {
+    const now = new Date();
     memoryDb.chats.push({
       id,
-      createdAt: new Date(),
+      createdAt: now,
+      updatedAt: now,
       userId,
       title,
       visibility,
@@ -147,9 +158,11 @@ export async function saveChat({
   }
 
   try {
+    const now = new Date();
     return await db.insert(chat).values({
       id,
-      createdAt: new Date(),
+      createdAt: now,
+      updatedAt: now,
       userId,
       title,
       visibility,
@@ -159,24 +172,30 @@ export async function saveChat({
   }
 }
 
-export async function deleteChatById({ id }: { id: string }) {
+export async function deleteChatById(input: ChatIdInput) {
+  const conversationId = resolveChatId(input);
+
+  if (!conversationId) {
+    throw new ChatbotError("bad_request:database", "Chat id is required");
+  }
+
   if (useMemoryDb) {
-    const selectedChat = memoryDb.chats.find((currentChat) => currentChat.id === id);
-    memoryDb.votes = memoryDb.votes.filter((currentVote) => currentVote.chatId !== id);
-    memoryDb.messages = memoryDb.messages.filter((currentMessage) => currentMessage.chatId !== id);
-    memoryDb.streams = memoryDb.streams.filter((currentStream) => currentStream.chatId !== id);
-    memoryDb.chats = memoryDb.chats.filter((currentChat) => currentChat.id !== id);
+    const selectedChat = memoryDb.chats.find((currentChat) => currentChat.id === conversationId);
+    memoryDb.votes = memoryDb.votes.filter((currentVote) => currentVote.chatId !== conversationId);
+    memoryDb.messages = memoryDb.messages.filter((currentMessage) => currentMessage.chatId !== conversationId);
+    memoryDb.streams = memoryDb.streams.filter((currentStream) => currentStream.chatId !== conversationId);
+    memoryDb.chats = memoryDb.chats.filter((currentChat) => currentChat.id !== conversationId);
     return selectedChat;
   }
 
   try {
-    await db.delete(vote).where(eq(vote.chatId, id));
-    await db.delete(message).where(eq(message.chatId, id));
-    await db.delete(stream).where(eq(stream.chatId, id));
+    await db.delete(vote).where(eq(vote.chatId, conversationId));
+    await db.delete(message).where(eq(message.chatId, conversationId));
+    await db.delete(stream).where(eq(stream.chatId, conversationId));
 
     const [chatsDeleted] = await db
       .delete(chat)
-      .where(eq(chat.id, id))
+      .where(eq(chat.id, conversationId))
       .returning();
     return chatsDeleted;
   } catch (_error) {
@@ -329,13 +348,19 @@ export async function getChatsByUserId({
   }
 }
 
-export async function getChatById({ id }: { id: string }) {
+export async function getChatById(input: ChatIdInput) {
+  const conversationId = resolveChatId(input);
+
+  if (!conversationId) {
+    throw new ChatbotError("bad_request:database", "Chat id is required");
+  }
+
   if (useMemoryDb) {
-    return memoryDb.chats.find((currentChat) => currentChat.id === id) ?? null;
+    return memoryDb.chats.find((currentChat) => currentChat.id === conversationId) ?? null;
   }
 
   try {
-    const [selectedChat] = await db.select().from(chat).where(eq(chat.id, id));
+    const [selectedChat] = await db.select().from(chat).where(eq(chat.id, conversationId));
     if (!selectedChat) {
       return null;
     }
@@ -362,28 +387,46 @@ export async function saveMessages({ messages }: { messages: DBMessage[] }) {
 export async function updateMessage({
   id,
   parts,
+  status,
 }: {
   id: string;
-  parts: DBMessage["parts"];
+  parts?: DBMessage["parts"];
+  status?: DBMessage["status"];
 }) {
   if (useMemoryDb) {
-    memoryDb.messages = memoryDb.messages.map((currentMessage) =>
-      currentMessage.id === id ? { ...currentMessage, parts } : currentMessage
-    );
+    memoryDb.messages = memoryDb.messages.map((currentMessage) => {
+      if (currentMessage.id === id) {
+        const updated: any = { ...currentMessage };
+        if (parts !== undefined) updated.parts = parts;
+        if (status !== undefined) updated.status = status;
+        updated.updatedAt = new Date();
+        return updated;
+      }
+      return currentMessage;
+    });
     return;
   }
 
   try {
-    return await db.update(message).set({ parts }).where(eq(message.id, id));
+    const updates: any = { updatedAt: new Date() };
+    if (parts !== undefined) updates.parts = parts;
+    if (status !== undefined) updates.status = status;
+    return await db.update(message).set(updates).where(eq(message.id, id));
   } catch (_error) {
     throw new ChatbotError("bad_request:database", "Failed to update message");
   }
 }
 
-export async function getMessagesByChatId({ id }: { id: string }) {
+export async function getMessagesByChatId(input: ChatIdInput) {
+  const conversationId = resolveChatId(input);
+
+  if (!conversationId) {
+    throw new ChatbotError("bad_request:database", "Chat id is required");
+  }
+
   if (useMemoryDb) {
     return memoryDb.messages
-      .filter((currentMessage) => currentMessage.chatId === id)
+      .filter((currentMessage) => currentMessage.chatId === conversationId)
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   }
 
@@ -391,7 +434,7 @@ export async function getMessagesByChatId({ id }: { id: string }) {
     return await db
       .select()
       .from(message)
-      .where(eq(message.chatId, id))
+      .where(eq(message.chatId, conversationId))
       .orderBy(asc(message.createdAt));
   } catch (_error) {
     throw new ChatbotError(
@@ -444,13 +487,19 @@ export async function voteMessage({
   }
 }
 
-export async function getVotesByChatId({ id }: { id: string }) {
+export async function getVotesByChatId(input: ChatIdInput) {
+  const conversationId = resolveChatId(input);
+
+  if (!conversationId) {
+    throw new ChatbotError("bad_request:database", "Chat id is required");
+  }
+
   if (useMemoryDb) {
-    return memoryDb.votes.filter((currentVote) => currentVote.chatId === id);
+    return memoryDb.votes.filter((currentVote) => currentVote.chatId === conversationId);
   }
 
   try {
-    return await db.select().from(vote).where(eq(vote.chatId, id));
+    return await db.select().from(vote).where(eq(vote.chatId, conversationId));
   } catch (_error) {
     throw new ChatbotError(
       "bad_request:database",

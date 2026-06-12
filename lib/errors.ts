@@ -4,7 +4,8 @@ export type ErrorType =
   | "forbidden"
   | "not_found"
   | "rate_limit"
-  | "offline";
+  | "offline"
+  | "internal_error";
 
 export type Surface =
   | "chat"
@@ -16,7 +17,8 @@ export type Surface =
   | "vote"
   | "document"
   | "suggestions"
-  | "activate_gateway";
+  | "activate_gateway"
+  | "upload";
 
 export type ErrorCode = `${ErrorType}:${Surface}`;
 
@@ -33,6 +35,7 @@ export const visibilityBySurface: Record<Surface, ErrorVisibility> = {
   document: "response",
   suggestions: "response",
   activate_gateway: "response",
+  upload: "response",
 };
 
 export class ChatbotError extends Error {
@@ -112,6 +115,15 @@ export function getMessageByErrorCode(errorCode: ErrorCode): string {
     case "bad_request:document":
       return "The request to create or update the document was invalid. Please check your input and try again.";
 
+    case "unauthorized:upload":
+      return "You need to sign in to upload files. Please sign in and try again.";
+    case "bad_request:upload":
+      return "The file couldn't be uploaded. Please check the file type and size.";
+    case "forbidden:upload":
+      return "You don't have permission to upload this file.";
+    case "internal_error:upload":
+      return "An error occurred while uploading the file. Please try again later.";
+
     default:
       return "Something went wrong. Please try again later.";
   }
@@ -131,6 +143,8 @@ function getStatusCodeByType(type: ErrorType) {
       return 429;
     case "offline":
       return 503;
+    case "internal_error":
+      return 500;
     default:
       return 500;
   }

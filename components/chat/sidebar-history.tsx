@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import type { User } from "next-auth";
 import { useState } from "react";
 import { toast } from "sonner";
+import { useSWRConfig } from "swr";
 import useSWRInfinite from "swr/infinite";
 import {
   AlertDialog,
@@ -27,6 +28,7 @@ import {
 import type { Chat } from "@/lib/db/schema";
 import { fetcher } from "@/lib/utils";
 import { LoaderIcon } from "./icons";
+import { RenameChatDialog } from "./rename-chat-dialog";
 import { ChatItem } from "./sidebar-history-item";
 
 type GroupedChats = {
@@ -116,8 +118,10 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
   );
 
   const router = useRouter();
+  const { mutate: mutateGlobal } = useSWRConfig();
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [renameChat, setRenameChat] = useState<Chat | null>(null);
 
   const hasReachedEnd = paginatedChatHistories
     ? paginatedChatHistories.some((page) => page.hasMore === false)
@@ -152,6 +156,29 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
     );
 
     toast.success("Chat deleted");
+  };
+
+  const handleRename = (title: string) => {
+    const renamedChat = renameChat;
+    if (!renamedChat) {
+      return;
+    }
+
+    mutate((chatHistories) => {
+      if (!chatHistories) {
+        return chatHistories;
+      }
+      return chatHistories.map((chatHistory) => ({
+        ...chatHistory,
+        chats: chatHistory.chats.map((chat) =>
+          chat.id === renamedChat.id ? { ...chat, title } : chat
+        ),
+      }));
+    }, false);
+
+    mutateGlobal(
+      `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/messages?chatId=${renamedChat.id}`
+    );
   };
 
   if (!user) {
@@ -242,6 +269,7 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
                               setDeleteId(chatId);
                               setShowDeleteDialog(true);
                             }}
+                            onRename={setRenameChat}
                             setOpenMobile={setOpenMobile}
                           />
                         ))}
@@ -262,6 +290,7 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
                               setDeleteId(chatId);
                               setShowDeleteDialog(true);
                             }}
+                            onRename={setRenameChat}
                             setOpenMobile={setOpenMobile}
                           />
                         ))}
@@ -282,6 +311,7 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
                               setDeleteId(chatId);
                               setShowDeleteDialog(true);
                             }}
+                            onRename={setRenameChat}
                             setOpenMobile={setOpenMobile}
                           />
                         ))}
@@ -302,6 +332,7 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
                               setDeleteId(chatId);
                               setShowDeleteDialog(true);
                             }}
+                            onRename={setRenameChat}
                             setOpenMobile={setOpenMobile}
                           />
                         ))}
@@ -322,6 +353,7 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
                               setDeleteId(chatId);
                               setShowDeleteDialog(true);
                             }}
+                            onRename={setRenameChat}
                             setOpenMobile={setOpenMobile}
                           />
                         ))}
@@ -368,6 +400,20 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {renameChat && (
+        <RenameChatDialog
+          chatId={renameChat.id}
+          onOpenChange={(open) => {
+            if (!open) {
+              setRenameChat(null);
+            }
+          }}
+          onRenamed={handleRename}
+          open={true}
+          title={renameChat.title}
+        />
+      )}
     </>
   );
 }

@@ -10,11 +10,14 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-latest
     env:
-      BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
-      BETTER_AUTH_URL: ${{ secrets.BETTER_AUTH_URL }}
+      AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+      NEXT_PUBLIC_SITE_URL: http://localhost:3000
       POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
-      BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+      AI_PROVIDER: mock
+      DEFAULT_CHAT_MODEL: chat-model
+      TITLE_MODEL: title-model
       REDIS_URL: ${{ secrets.REDIS_URL }}
+      UPLOAD_DIR: ./uploads
 
     steps:
       - uses: actions/checkout@v4

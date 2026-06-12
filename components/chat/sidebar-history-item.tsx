@@ -22,6 +22,7 @@ import {
   GlobeIcon,
   LockIcon,
   MoreHorizontalIcon,
+  PencilEditIcon,
   ShareIcon,
   TrashIcon,
 } from "./icons";
@@ -30,11 +31,13 @@ const PureChatItem = ({
   chat,
   isActive,
   onDelete,
+  onRename,
   setOpenMobile,
 }: {
   chat: Chat;
   isActive: boolean;
   onDelete: (chatId: string) => void;
+  onRename: (chat: Chat) => void;
   setOpenMobile: (open: boolean) => void;
 }) => {
   const { visibilityType, setVisibilityType } = useChatVisibility({
@@ -102,6 +105,11 @@ const PureChatItem = ({
               </DropdownMenuSubContent>
             </DropdownMenuPortal>
           </DropdownMenuSub>
+
+          <DropdownMenuItem onSelect={() => onRename(chat)}>
+            <PencilEditIcon />
+            <span>Rename</span>
+          </DropdownMenuItem>
 
           <DropdownMenuItem
             onSelect={() => onDelete(chat.id)}

@@ -59,6 +59,8 @@ function PureMessages({
     }
   }, [chatId, reset]);
 
+  const lastMessage = messages.at(-1);
+
   return (
     <div className="relative flex-1 bg-background">
       {messages.length === 0 && !isLoading && (
@@ -83,6 +85,12 @@ function PureMessages({
                 status === "streaming" && messages.length - 1 === index
               }
               isReadonly={isReadonly}
+              canRegenerate={
+                message.role === "assistant" &&
+                message.id === lastMessage?.id &&
+                status !== "submitted" &&
+                status !== "streaming"
+              }
               key={message.id}
               message={message}
               onEdit={onEditMessage}

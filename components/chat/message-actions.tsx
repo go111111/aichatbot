@@ -1,4 +1,6 @@
+import type { UseChatHelpers } from "@ai-sdk/react";
 import equal from "fast-deep-equal";
+import { RefreshCcwIcon } from "lucide-react";
 import { memo } from "react";
 import { toast } from "sonner";
 import { useSWRConfig } from "swr";
@@ -12,17 +14,21 @@ import {
 import { CopyIcon, PencilEditIcon, ThumbDownIcon, ThumbUpIcon } from "./icons";
 
 export function PureMessageActions({
+  canRegenerate,
   chatId,
   message,
   vote,
   isLoading,
   onEdit,
+  regenerate,
 }: {
+  canRegenerate: boolean;
   chatId: string;
   message: ChatMessage;
   vote: Vote | undefined;
   isLoading: boolean;
   onEdit?: () => void;
+  regenerate: UseChatHelpers<ChatMessage>["regenerate"];
 }) {
   const { mutate } = useSWRConfig();
   const [_, copyToClipboard] = useCopyToClipboard();
@@ -45,6 +51,26 @@ export function PureMessageActions({
 
     await copyToClipboard(textFromParts);
     toast.success("Copied to clipboard!");
+  };
+
+  const handleRegenerate = async () => {
+    try {
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/messages`,
+        {
+          method: "DELETE",
+          body: JSON.stringify({ id: message.id, chatId }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to delete previous response");
+      }
+
+      await regenerate({ messageId: message.id });
+    } catch (_error) {
+      toast.error("Failed to regenerate response.");
+    }
   };
 
   if (message.role === "user") {
@@ -82,6 +108,17 @@ export function PureMessageActions({
       >
         <CopyIcon />
       </Action>
+
+      {canRegenerate && (
+        <Action
+          className="text-muted-foreground/50 hover:text-foreground"
+          data-testid="message-regenerate"
+          onClick={handleRegenerate}
+          tooltip="Regenerate Response"
+        >
+          <RefreshCcwIcon className="size-3.5" />
+        </Action>
+      )}
 
       <Action
         className="text-muted-foreground/50 hover:text-foreground"
@@ -199,6 +236,12 @@ export const MessageActions = memo(
       return false;
     }
     if (prevProps.isLoading !== nextProps.isLoading) {
+      return false;
+    }
+    if (prevProps.canRegenerate !== nextProps.canRegenerate) {
+      return false;
+    }
+    if (prevProps.message.id !== nextProps.message.id) {
       return false;
     }
 

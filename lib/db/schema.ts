@@ -27,7 +27,8 @@ export type User = InferSelectModel<typeof user>;
 
 export const chat = pgTable("Chat", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
-  createdAt: timestamp("createdAt").notNull(),
+  createdAt: timestamp("createdAt").notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt").notNull().defaultNow(),
   title: text("title").notNull(),
   userId: uuid("userId")
     .notNull()
@@ -44,10 +45,17 @@ export const message = pgTable("Message_v2", {
   chatId: uuid("chatId")
     .notNull()
     .references(() => chat.id),
-  role: varchar("role").notNull(),
+  role: varchar("role", { enum: ["user", "assistant", "system"] }).notNull(),
   parts: json("parts").notNull(),
   attachments: json("attachments").notNull(),
-  createdAt: timestamp("createdAt").notNull(),
+  status: varchar("status", {
+    enum: ["pending", "streaming", "done", "error", "aborted"],
+  })
+    .notNull()
+    .default("done"),
+  requestId: uuid("requestId"),
+  createdAt: timestamp("createdAt").notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt").notNull().defaultNow(),
 });
 
 export type DBMessage = InferSelectModel<typeof message>;

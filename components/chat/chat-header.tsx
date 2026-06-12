@@ -1,68 +1,87 @@
 "use client";
 
-import { PanelLeftIcon } from "lucide-react";
-import Link from "next/link";
-import { memo } from "react";
+import { PanelLeftIcon, PencilIcon } from "lucide-react";
+import { memo, useState } from "react";
+import { useSWRConfig } from "swr";
+import { unstable_serialize } from "swr/infinite";
 import { Button } from "@/components/ui/button";
 import { useSidebar } from "@/components/ui/sidebar";
-import { VercelIcon } from "./icons";
+import { getChatHistoryPaginationKey } from "./sidebar-history";
+import { RenameChatDialog } from "./rename-chat-dialog";
 import { VisibilitySelector, type VisibilityType } from "./visibility-selector";
 
 function PureChatHeader({
+  canRename,
+  chatTitle,
   chatId,
   selectedVisibilityType,
   isReadonly,
 }: {
+  canRename: boolean;
+  chatTitle: string;
   chatId: string;
   selectedVisibilityType: VisibilityType;
   isReadonly: boolean;
 }) {
   const { state, toggleSidebar, isMobile } = useSidebar();
+  const { mutate } = useSWRConfig();
+  const [renameOpen, setRenameOpen] = useState(false);
 
   if (state === "collapsed" && !isMobile) {
     return null;
   }
 
   return (
-    <header className="sticky top-0 flex h-14 items-center gap-2 bg-sidebar px-3">
-      <Button
-        className="md:hidden"
-        onClick={toggleSidebar}
-        size="icon-sm"
-        variant="ghost"
-      >
-        <PanelLeftIcon className="size-4" />
-      </Button>
+    <header className="sticky top-0 flex h-14 items-center justify-between gap-3 border-b border-sidebar-border/50 bg-sidebar px-3">
+      <div className="flex min-w-0 items-center gap-2">
+        <Button
+          className="md:hidden"
+          onClick={toggleSidebar}
+          size="icon-sm"
+          variant="ghost"
+        >
+          <PanelLeftIcon className="size-4" />
+        </Button>
 
-      <Link
-        className="flex size-8 items-center justify-center rounded-lg md:hidden"
-        href="https://vercel.com/templates/next.js/chatbot"
-        rel="noopener noreferrer"
-        target="_blank"
-      >
-        <VercelIcon size={14} />
-      </Link>
+        <div className="group/title flex min-w-0 items-center gap-1.5">
+          <h1 className="max-w-[48vw] truncate text-[13px] font-medium text-sidebar-foreground sm:max-w-[360px]">
+            {chatTitle}
+          </h1>
+          {!isReadonly && canRename && (
+            <Button
+              className="size-7 shrink-0 text-sidebar-foreground/40 opacity-0 transition-opacity hover:text-sidebar-foreground group-hover/title:opacity-100 focus-visible:opacity-100"
+              onClick={() => setRenameOpen(true)}
+              size="icon-sm"
+              title="Rename chat"
+              variant="ghost"
+            >
+              <PencilIcon className="size-3.5" />
+            </Button>
+          )}
+        </div>
+      </div>
 
       {!isReadonly && (
-        <VisibilitySelector
-          chatId={chatId}
-          selectedVisibilityType={selectedVisibilityType}
-        />
+        <div className="flex shrink-0 items-center gap-2">
+          <VisibilitySelector
+            chatId={chatId}
+            selectedVisibilityType={selectedVisibilityType}
+          />
+        </div>
       )}
 
-      <Button
-        asChild
-        className="hidden rounded-lg bg-foreground px-4 text-background hover:bg-foreground/90 md:ml-auto md:flex"
-      >
-        <Link
-          href="https://vercel.com/templates/next.js/chatbot"
-          rel="noopener noreferrer"
-          target="_blank"
-        >
-          <VercelIcon size={16} />
-          Deploy with Vercel
-        </Link>
-      </Button>
+      <RenameChatDialog
+        chatId={chatId}
+        onOpenChange={setRenameOpen}
+        onRenamed={() => {
+          mutate(
+            `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/messages?chatId=${chatId}`
+          );
+          mutate(unstable_serialize(getChatHistoryPaginationKey));
+        }}
+        open={renameOpen}
+        title={chatTitle}
+      />
     </header>
   );
 }
@@ -70,6 +89,8 @@ function PureChatHeader({
 export const ChatHeader = memo(PureChatHeader, (prevProps, nextProps) => {
   return (
     prevProps.chatId === nextProps.chatId &&
+    prevProps.canRename === nextProps.canRename &&
+    prevProps.chatTitle === nextProps.chatTitle &&
     prevProps.selectedVisibilityType === nextProps.selectedVisibilityType &&
     prevProps.isReadonly === nextProps.isReadonly
   );

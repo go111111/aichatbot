@@ -40,6 +40,7 @@ type ActiveChatContextValue = {
   input: string;
   setInput: Dispatch<SetStateAction<string>>;
   visibilityType: VisibilityType;
+  chatTitle: string;
   isReadonly: boolean;
   isLoading: boolean;
   votes: Vote[] | undefined;
@@ -93,9 +94,15 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
   const initialMessages: ChatMessage[] = isNewChat
     ? []
     : (chatData?.messages ?? []);
-  const visibility: VisibilityType = isNewChat
+  const serverVisibility: VisibilityType = isNewChat
     ? "private"
     : (chatData?.visibility ?? "private");
+  const { data: localVisibility } = useSWR<VisibilityType>(
+    `${chatId}-visibility`,
+    null
+  );
+  const visibility = localVisibility ?? serverVisibility;
+  const chatTitle = isNewChat ? "New chat" : (chatData?.title ?? "New chat");
 
   const {
     messages,
@@ -140,12 +147,13 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
 
         return {
           body: {
-            id: request.id,
+            conversationId: request.id, // 改为 conversationId
             ...(isToolApprovalContinuation
               ? { messages: request.messages }
               : { message: lastMessage }),
             selectedChatModel: currentModelIdRef.current,
             selectedVisibilityType: visibility,
+            stream: true, // 显式启用流式
             ...request.body,
           },
         };
@@ -158,14 +166,47 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       mutate(unstable_serialize(getChatHistoryPaginationKey));
     },
     onError: (error) => {
-      if (error.message?.includes("AI Gateway requires a valid credit card")) {
-        setShowCreditCardAlert(true);
-      } else if (error instanceof ChatbotError) {
-        toast({ type: "error", description: error.message });
+      const description =
+        error instanceof ChatbotError
+          ? error.message
+          : error.message ||
+            "I couldn't complete this response. Please check your network or try again.";
+
+      setMessages((currentMessages) => {
+        const lastMessage = currentMessages.at(-1);
+
+        if (
+          lastMessage?.role === "assistant" &&
+          lastMessage.metadata?.status === "error"
+        ) {
+          return currentMessages;
+        }
+
+        return [
+          ...currentMessages,
+          {
+            id: generateUUID(),
+            role: "assistant" as const,
+            metadata: {
+              createdAt: new Date().toISOString(),
+              status: "error" as const,
+            },
+            parts: [
+              {
+                type: "text" as const,
+                text: `${description} You can try again or regenerate the response.`,
+              },
+            ],
+          },
+        ];
+      });
+
+      if (error instanceof ChatbotError) {
+        toast({ type: "error", description });
       } else {
         toast({
           type: "error",
-          description: error.message || "Oops, an error occurred!",
+          description,
         });
       }
     },
@@ -257,6 +298,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       input,
       setInput,
       visibilityType: visibility,
+      chatTitle,
       isReadonly,
       isLoading: !isNewChat && isLoading,
       votes,
@@ -276,6 +318,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       addToolApprovalResponse,
       input,
       visibility,
+      chatTitle,
       isReadonly,
       isNewChat,
       isLoading,

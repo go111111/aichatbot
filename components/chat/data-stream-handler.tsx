@@ -1,16 +1,21 @@
 "use client";
 
 import { useEffect } from "react";
+import { usePathname } from "next/navigation";
 import { useSWRConfig } from "swr";
 import { unstable_serialize } from "swr/infinite";
 import { initialArtifactData, useArtifact } from "@/hooks/use-artifact";
 import { artifactDefinitions } from "./artifact";
 import { useDataStream } from "./data-stream-provider";
-import { getChatHistoryPaginationKey } from "./sidebar-history";
+import {
+  type ChatHistory,
+  getChatHistoryPaginationKey,
+} from "./sidebar-history";
 
 export function DataStreamHandler() {
   const { dataStream, setDataStream } = useDataStream();
   const { mutate } = useSWRConfig();
+  const pathname = usePathname();
 
   const { artifact, setArtifact, setMetadata } = useArtifact();
 
@@ -24,6 +29,31 @@ export function DataStreamHandler() {
 
     for (const delta of newDeltas) {
       if (delta.type === "data-chat-title") {
+        const currentPath =
+          typeof window === "undefined" ? pathname : window.location.pathname;
+        const chatId = currentPath?.startsWith("/chat/")
+          ? currentPath.split("/")[2]
+          : null;
+        if (chatId) {
+          mutate(
+            unstable_serialize(getChatHistoryPaginationKey),
+            (current?: ChatHistory[]) => {
+              if (!current) {
+                return current;
+              }
+              return current.map((page) => ({
+                ...page,
+                chats: page.chats.map((chat) =>
+                  chat.id === chatId ? { ...chat, title: delta.data } : chat
+                ),
+              }));
+            },
+            { revalidate: false }
+          );
+          mutate(
+            `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/messages?chatId=${chatId}`
+          );
+        }
         mutate(unstable_serialize(getChatHistoryPaginationKey));
         continue;
       }
@@ -85,7 +115,15 @@ export function DataStreamHandler() {
         }
       });
     }
-  }, [dataStream, setArtifact, setMetadata, artifact, setDataStream, mutate]);
+  }, [
+    dataStream,
+    setArtifact,
+    setMetadata,
+    artifact,
+    setDataStream,
+    mutate,
+    pathname,
+  ]);
 
   return null;
 }

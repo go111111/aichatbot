@@ -7,8 +7,15 @@ import type { requestSuggestions } from "./ai/tools/request-suggestions";
 import type { updateDocument } from "./ai/tools/update-document";
 import type { Suggestion } from "./db/schema";
 
+// Message metadata with enhanced tracking
 export const messageMetadataSchema = z.object({
   createdAt: z.string(),
+  updatedAt: z.string().optional(),
+  status: z
+    .enum(["pending", "streaming", "done", "error", "aborted"])
+    .optional()
+    .default("done"),
+  requestId: z.string().optional(),
 });
 
 export type MessageMetadata = z.infer<typeof messageMetadataSchema>;
@@ -52,4 +59,6 @@ export type Attachment = {
   name: string;
   url: string;
   contentType: string;
+  size?: number;
+  text?: string;
 };

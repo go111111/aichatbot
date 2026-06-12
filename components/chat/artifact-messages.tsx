@@ -40,6 +40,8 @@ function PureArtifactMessages({
     status,
   });
 
+  const lastMessage = messages.at(-1);
+
   return (
     <div
       className="flex h-full flex-col items-center gap-4 overflow-y-scroll px-4 pt-20"
@@ -49,6 +51,12 @@ function PureArtifactMessages({
         <PreviewMessage
           addToolApprovalResponse={addToolApprovalResponse}
           chatId={chatId}
+          canRegenerate={
+            message.role === "assistant" &&
+            message.id === lastMessage?.id &&
+            status !== "submitted" &&
+            status !== "streaming"
+          }
           isLoading={status === "streaming" && index === messages.length - 1}
           isReadonly={isReadonly}
           key={message.id}

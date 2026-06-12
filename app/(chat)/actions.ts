@@ -4,13 +4,15 @@ import { generateText, type UIMessage } from "ai";
 import { cookies } from "next/headers";
 import { auth } from "@/app/(auth)/auth";
 import type { VisibilityType } from "@/components/chat/visibility-selector";
-import { titleModel } from "@/lib/ai/models";
 import { titlePrompt } from "@/lib/ai/prompts";
 import { getTitleModel } from "@/lib/ai/providers";
+import type { DBMessage } from "@/lib/db/schema";
 import {
   deleteMessagesByChatIdAfterTimestamp,
   getChatById,
   getMessageById,
+  getMessagesByChatId,
+  updateChatTitleById,
   updateChatVisibilityById,
 } from "@/lib/db/queries";
 import { getTextFromMessage } from "@/lib/utils";
@@ -29,9 +31,6 @@ export async function generateTitleFromUserMessage({
     model: getTitleModel(),
     system: titlePrompt,
     prompt: getTextFromMessage(message),
-    providerOptions: {
-      gateway: { order: titleModel.gatewayOrder },
-    },
   });
   return text
     .replace(/^[#*"\s]+/, "")
@@ -39,18 +38,35 @@ export async function generateTitleFromUserMessage({
     .trim();
 }
 
-export async function deleteTrailingMessages({ id }: { id: string }) {
+export async function deleteTrailingMessages({
+  id,
+  chatId,
+}: {
+  id: string;
+  chatId?: string;
+}) {
   const session = await auth();
   if (!session?.user?.id) {
     throw new Error("Unauthorized");
   }
 
-  const [message] = await getMessageById({ id });
+  let message: DBMessage | undefined = (await getMessageById({ id }))[0];
+
+  if (!message && chatId) {
+    const chat = await getChatById({ conversationId: chatId });
+    if (!chat || chat.userId !== session.user.id) {
+      throw new Error("Unauthorized");
+    }
+
+    const messages = await getMessagesByChatId({ conversationId: chatId });
+    message = [...messages].reverse().find((item) => item.role === "assistant");
+  }
+
   if (!message) {
     throw new Error("Message not found");
   }
 
-  const chat = await getChatById({ id: message.chatId });
+  const chat = await getChatById({ conversationId: message.chatId });
   if (!chat || chat.userId !== session.user.id) {
     throw new Error("Unauthorized");
   }
@@ -73,10 +89,35 @@ export async function updateChatVisibility({
     throw new Error("Unauthorized");
   }
 
-  const chat = await getChatById({ id: chatId });
+  const chat = await getChatById({ conversationId: chatId });
   if (!chat || chat.userId !== session.user.id) {
     throw new Error("Unauthorized");
   }
 
   await updateChatVisibilityById({ chatId, visibility });
+}
+
+export async function updateChatTitle({
+  chatId,
+  title,
+}: {
+  chatId: string;
+  title: string;
+}) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    throw new Error("Unauthorized");
+  }
+
+  const normalizedTitle = title.trim().replace(/\s+/g, " ").slice(0, 80);
+  if (!normalizedTitle) {
+    throw new Error("Title cannot be empty");
+  }
+
+  const chat = await getChatById({ conversationId: chatId });
+  if (!chat || chat.userId !== session.user.id) {
+    throw new Error("Unauthorized");
+  }
+
+  await updateChatTitleById({ chatId, title: normalizedTitle });
 }

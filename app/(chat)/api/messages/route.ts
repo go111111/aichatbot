@@ -1,5 +1,11 @@
 import { auth } from "@/app/(auth)/auth";
-import { getChatById, getMessagesByChatId } from "@/lib/db/queries";
+import {
+  deleteMessagesByChatIdAfterTimestamp,
+  getChatById,
+  getMessageById,
+  getMessagesByChatId,
+} from "@/lib/db/queries";
+import type { DBMessage } from "@/lib/db/schema";
 import { convertToUIMessages } from "@/lib/utils";
 
 export async function GET(request: Request) {
@@ -12,8 +18,8 @@ export async function GET(request: Request) {
 
   const [session, chat, messages] = await Promise.all([
     auth(),
-    getChatById({ id: chatId }),
-    getMessagesByChatId({ id: chatId }),
+    getChatById({ conversationId: chatId }),
+    getMessagesByChatId({ conversationId: chatId }),
   ]);
 
   if (!chat) {
@@ -35,9 +41,60 @@ export async function GET(request: Request) {
   const isReadonly = !session?.user || session.user.id !== chat.userId;
 
   return Response.json({
+    title: chat.title,
     messages: convertToUIMessages(messages),
     visibility: chat.visibility,
     userId: chat.userId,
     isReadonly,
   });
+}
+
+export async function DELETE(request: Request) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  let id: string | undefined;
+  let chatId: string | undefined;
+
+  try {
+    const body = await request.json();
+    id = body.id;
+    chatId = body.chatId;
+  } catch {
+    return Response.json({ error: "invalid request" }, { status: 400 });
+  }
+
+  if (!id) {
+    return Response.json({ error: "message id required" }, { status: 400 });
+  }
+
+  let message: DBMessage | undefined = (await getMessageById({ id }))[0];
+
+  if (!message && chatId) {
+    const chat = await getChatById({ conversationId: chatId });
+    if (!chat || chat.userId !== session.user.id) {
+      return Response.json({ error: "forbidden" }, { status: 403 });
+    }
+
+    const messages = await getMessagesByChatId({ conversationId: chatId });
+    message = [...messages].reverse().find((item) => item.role === "assistant");
+  }
+
+  if (!message) {
+    return Response.json({ error: "message not found" }, { status: 404 });
+  }
+
+  const chat = await getChatById({ conversationId: message.chatId });
+  if (!chat || chat.userId !== session.user.id) {
+    return Response.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  await deleteMessagesByChatIdAfterTimestamp({
+    chatId: message.chatId,
+    timestamp: message.createdAt,
+  });
+
+  return Response.json({ ok: true });
 }

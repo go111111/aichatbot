@@ -37,7 +37,7 @@ export type ModelSelectorContentProps = ComponentProps<typeof PopoverContent> & 
 export const ModelSelectorContent = ({
   className,
   children,
-  title: _title,
+  title,
   ...props
 }: ModelSelectorContentProps) => (
   <PopoverContent
@@ -51,6 +51,16 @@ export const ModelSelectorContent = ({
     {...props}
   >
     <Command className="**:data-[slot=command-input-wrapper]:h-auto">
+      {title ? (
+        <div className="border-border/50 border-b px-3 py-2.5">
+          <div className="text-[12px] font-medium text-foreground">
+            {title}
+          </div>
+          <div className="mt-0.5 text-[11px] text-muted-foreground">
+            Choose the model used for the next response.
+          </div>
+        </div>
+      ) : null}
       {children}
     </Command>
   </PopoverContent>
@@ -120,7 +130,6 @@ export type ModelSelectorLogoProps = Omit<
     | "groq"
     | "github-copilot"
     | "mistral"
-    | "vercel"
     | "nebius"
     | "deepseek"
     | "alibaba-cn"

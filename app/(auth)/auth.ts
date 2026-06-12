@@ -109,7 +109,7 @@ export async function auth() {
         name: "Local Dev",
         type: "guest" as const,
       },
-      expires: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      expires: "2099-01-01T00:00:00.000Z",
     };
   }
 

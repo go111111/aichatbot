@@ -14,8 +14,10 @@ import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
   type ChangeEvent,
+  cloneElement,
   type Dispatch,
   memo,
+  type ReactElement,
   type SetStateAction,
   useCallback,
   useEffect,
@@ -23,7 +25,8 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
+import { unstable_serialize } from "swr/infinite";
 import { useLocalStorage, useWindowSize } from "usehooks-ts";
 import {
   ModelSelector,
@@ -43,7 +46,7 @@ import {
   type ModelCapabilities,
 } from "@/lib/ai/models";
 import type { Attachment, ChatMessage } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, generateUUID } from "@/lib/utils";
 import {
   PromptInput,
   PromptInputFooter,
@@ -54,6 +57,10 @@ import {
 import { Button } from "../ui/button";
 import { PaperclipIcon, StopIcon } from "./icons";
 import { PreviewAttachment } from "./preview-attachment";
+import {
+  type ChatHistory,
+  getChatHistoryPaginationKey,
+} from "./sidebar-history";
 import {
   type SlashCommand,
   SlashCommandMenu,
@@ -66,6 +73,36 @@ function setCookie(name: string, value: string) {
   const maxAge = 60 * 60 * 24 * 365;
   // biome-ignore lint/suspicious/noDocumentCookie: needed for client-side cookie setting
   document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${maxAge}`;
+}
+
+const TEXT_ATTACHMENT_TYPES = new Set([
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "application/json",
+]);
+const TEXT_ATTACHMENT_EXTENSIONS = new Set([".txt", ".md", ".csv", ".json"]);
+const TEXT_ATTACHMENT_ACCEPT =
+  ".txt,.md,.csv,.json,text/plain,text/markdown,text/csv,application/json";
+const VISION_ATTACHMENT_ACCEPT =
+  "image/jpeg,image/png,image/webp,image/gif,application/pdf";
+const MAX_TEXT_ATTACHMENT_CHARS = 3600;
+
+function getFileExtension(name: string) {
+  const dotIndex = name.lastIndexOf(".");
+  return dotIndex >= 0 ? name.slice(dotIndex).toLowerCase() : "";
+}
+
+function isTextAttachment(file: Pick<File, "name" | "type">) {
+  return (
+    TEXT_ATTACHMENT_TYPES.has(file.type) ||
+    TEXT_ATTACHMENT_EXTENSIONS.has(getFileExtension(file.name))
+  );
+}
+
+function buildTextAttachmentPart(attachment: Attachment) {
+  const header = `Attached text file: ${attachment.name}\n\n`;
+  return `${header}${attachment.text ?? ""}`.slice(0, 4000);
 }
 
 function PureMultimodalInput({
@@ -108,6 +145,7 @@ function PureMultimodalInput({
   isLoading?: boolean;
 }) {
   const router = useRouter();
+  const { mutate } = useSWRConfig();
   const { setTheme, resolvedTheme } = useTheme();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { width } = useWindowSize();
@@ -214,27 +252,109 @@ function PureMultimodalInput({
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
   const [slashIndex, setSlashIndex] = useState(0);
+  const { data: modelsResponse } = useSWR(
+    `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/models`,
+    (url: string) => fetch(url).then((r) => r.json()),
+    { revalidateOnFocus: false, dedupingInterval: 3_600_000 }
+  );
+  const capabilities: Record<string, ModelCapabilities> | undefined =
+    modelsResponse?.capabilities ?? modelsResponse;
+  const selectedModelCapabilities =
+    capabilities?.[selectedModelId] ??
+    chatModels.find((model) => model.id === selectedModelId)?.capabilities;
+  const supportsVisionAttachments = selectedModelCapabilities?.vision === true;
+  const fileInputAccept = supportsVisionAttachments
+    ? `${TEXT_ATTACHMENT_ACCEPT},${VISION_ATTACHMENT_ACCEPT}`
+    : TEXT_ATTACHMENT_ACCEPT;
+
+  const getOptimisticTitle = useCallback((text: string) => {
+    const normalized = text.trim().replace(/\s+/g, " ");
+    if (!normalized) {
+      return "New chat";
+    }
+    return normalized.length > 42 ? `${normalized.slice(0, 42)}...` : normalized;
+  }, []);
 
   const submitForm = useCallback(() => {
+    const isFirstMessage = messages.length === 0;
+    const optimisticTitle = getOptimisticTitle(input);
+    const unsupportedFileAttachments = attachments.filter(
+      (attachment) =>
+        attachment.text === undefined && !supportsVisionAttachments
+    );
+
+    if (unsupportedFileAttachments.length > 0) {
+      toast.error("Selected model supports text attachments only.");
+      return;
+    }
+
     window.history.pushState(
       {},
       "",
       `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/chat/${chatId}`
     );
 
+    if (isFirstMessage) {
+      mutate(
+        unstable_serialize(getChatHistoryPaginationKey),
+        (current?: ChatHistory[]) => {
+          const optimisticChat = {
+            id: chatId,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            title: optimisticTitle,
+            userId: "",
+            visibility: selectedVisibilityType,
+          };
+
+          if (!current || current.length === 0) {
+            return [{ chats: [optimisticChat], hasMore: false }];
+          }
+
+          if (current.some((page) => page.chats.some((chat) => chat.id === chatId))) {
+            return current.map((page) => ({
+              ...page,
+              chats: page.chats.map((chat) =>
+                chat.id === chatId ? { ...chat, title: optimisticTitle } : chat
+              ),
+            }));
+          }
+
+          const [firstPage, ...restPages] = current;
+          return [
+            {
+              ...firstPage,
+              chats: [optimisticChat, ...firstPage.chats],
+            },
+            ...restPages,
+          ];
+        },
+        { revalidate: false }
+      );
+    }
+
+    const attachmentParts = attachments.map((attachment) => {
+      if (attachment.text !== undefined) {
+        return {
+          type: "text" as const,
+          text: buildTextAttachmentPart(attachment),
+        };
+      }
+
+      return {
+        type: "file" as const,
+        url: attachment.url,
+        name: attachment.name,
+        mediaType: attachment.contentType,
+        size: attachment.size,
+      };
+    });
+
     sendMessage({
       role: "user",
       parts: [
-        ...attachments.map((attachment) => ({
-          type: "file" as const,
-          url: attachment.url,
-          name: attachment.name,
-          mediaType: attachment.contentType,
-        })),
-        {
-          type: "text",
-          text: input,
-        },
+        ...attachmentParts,
+        ...(input.trim() ? [{ type: "text" as const, text: input }] : []),
       ],
     });
 
@@ -247,6 +367,7 @@ function PureMultimodalInput({
     }
   }, [
     input,
+    getOptimisticTitle,
     setInput,
     attachments,
     sendMessage,
@@ -254,9 +375,20 @@ function PureMultimodalInput({
     setLocalStorageInput,
     width,
     chatId,
+    messages.length,
+    mutate,
+    selectedVisibilityType,
+    supportsVisionAttachments,
   ]);
 
   const uploadFile = useCallback(async (file: File) => {
+    const isTextFile = isTextAttachment(file);
+
+    if (!isTextFile && !supportsVisionAttachments) {
+      toast.error("Selected model supports text attachments only.");
+      return;
+    }
+
     const formData = new FormData();
     formData.append("file", file);
 
@@ -271,12 +403,17 @@ function PureMultimodalInput({
 
       if (response.ok) {
         const data = await response.json();
-        const { url, pathname, contentType } = data;
+        const { url, pathname, contentType, size } = data;
+        const text = isTextFile
+          ? (await file.text()).slice(0, MAX_TEXT_ATTACHMENT_CHARS)
+          : undefined;
 
         return {
           url,
           name: pathname,
           contentType,
+          size,
+          text,
         };
       }
       const { error } = await response.json();
@@ -284,7 +421,7 @@ function PureMultimodalInput({
     } catch (_error) {
       toast.error("Failed to upload file, please try again!");
     }
-  }, []);
+  }, [supportsVisionAttachments]);
 
   const handleFileChange = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -329,6 +466,11 @@ function PureMultimodalInput({
 
       event.preventDefault();
 
+      if (!supportsVisionAttachments) {
+        toast.error("Selected model supports text attachments only.");
+        return;
+      }
+
       setUploadQueue((prev) => [...prev, "Pasted image"]);
 
       try {
@@ -355,7 +497,7 @@ function PureMultimodalInput({
         setUploadQueue([]);
       }
     },
-    [setAttachments, uploadFile]
+    [setAttachments, supportsVisionAttachments, uploadFile]
   );
 
   useEffect(() => {
@@ -367,6 +509,8 @@ function PureMultimodalInput({
     textarea.addEventListener("paste", handlePaste);
     return () => textarea.removeEventListener("paste", handlePaste);
   }, [handlePaste]);
+
+  const canSubmit = input.trim().length > 0 || attachments.length > 0;
 
   return (
     <div className={cn("relative flex w-full flex-col gap-4", className)}>
@@ -399,6 +543,7 @@ function PureMultimodalInput({
         )}
 
       <input
+        accept={fileInputAccept}
         className="pointer-events-none fixed -top-4 -left-4 size-0.5 opacity-0"
         multiple
         onChange={handleFileChange}
@@ -528,18 +673,18 @@ function PureMultimodalInput({
             />
           </PromptInputTools>
 
-          {status === "submitted" ? (
-            <StopButton setMessages={setMessages} stop={stop} />
+          {status === "submitted" || status === "streaming" ? (
+            <StopButton chatId={chatId} setMessages={setMessages} stop={stop} />
           ) : (
             <PromptInputSubmit
               className={cn(
                 "h-7 w-7 rounded-xl transition-all duration-200",
-                input.trim()
+                canSubmit
                   ? "bg-foreground text-background hover:opacity-85 active:scale-95"
                   : "bg-muted text-muted-foreground/25 cursor-not-allowed"
               )}
               data-testid="send-button"
-              disabled={!input.trim() || uploadQueue.length > 0}
+              disabled={!canSubmit || uploadQueue.length > 0}
               status={status}
               variant="secondary"
             >
@@ -602,21 +747,25 @@ function PureAttachmentsButton({
   const caps: Record<string, ModelCapabilities> | undefined =
     modelsResponse?.capabilities ?? modelsResponse;
   const hasVision = caps?.[selectedModelId]?.vision ?? false;
+  const isDisabled = status !== "ready";
 
   return (
     <Button
       className={cn(
         "h-7 w-7 rounded-lg border border-border/40 p-1 transition-colors",
-        hasVision
-          ? "text-foreground hover:border-border hover:text-foreground"
-          : "text-muted-foreground/30 cursor-not-allowed"
+        isDisabled
+          ? "text-muted-foreground/30 cursor-not-allowed"
+          : hasVision
+            ? "text-foreground hover:border-border hover:text-foreground"
+            : "text-muted-foreground hover:border-border hover:text-foreground"
       )}
       data-testid="attachments-button"
-      disabled={status !== "ready" || !hasVision}
+      disabled={isDisabled}
       onClick={(event) => {
         event.preventDefault();
         fileInputRef.current?.click();
       }}
+      title={hasVision ? "Attach files" : "Attach text files"}
       variant="ghost"
     >
       <PaperclipIcon size={14} style={{ width: 14, height: 14 }} />
@@ -649,44 +798,39 @@ function PureModelSelectorCompact({
     activeModels.find((m: ChatModel) => m.id === selectedModelId) ??
     activeModels.find((m: ChatModel) => m.id === DEFAULT_CHAT_MODEL) ??
     activeModels[0];
-  const [provider] = selectedModel.id.split("/");
+  const provider = selectedModel.provider;
 
   return (
     <ModelSelector onOpenChange={setOpen} open={open}>
       <ModelSelectorTrigger asChild>
         <Button
-          className="h-7 max-w-[200px] justify-between gap-1.5 rounded-lg px-2 text-[12px] text-muted-foreground transition-colors hover:text-foreground"
+          className="h-8 max-w-[240px] justify-between gap-2 rounded-lg border border-border/40 bg-background/70 px-2.5 text-[12px] text-muted-foreground shadow-none transition-colors hover:border-border hover:text-foreground"
           data-testid="model-selector"
           variant="ghost"
         >
+          <span className="hidden text-[11px] text-muted-foreground/70 sm:inline">
+            Model
+          </span>
           {provider && <ModelSelectorLogo provider={provider} />}
           <ModelSelectorName>{selectedModel.name}</ModelSelectorName>
         </Button>
       </ModelSelectorTrigger>
-      <ModelSelectorContent>
+      <ModelSelectorContent title="Model selection">
         <ModelSelectorInput placeholder="Search models..." />
         <ModelSelectorList>
           {(() => {
-            const curatedIds = new Set(chatModels.map((m) => m.id));
-            const allModels = dynamicModels
-              ? [
-                  ...chatModels,
-                  ...dynamicModels.filter((m) => !curatedIds.has(m.id)),
-                ]
-              : chatModels;
+            const allModels = activeModels;
 
             const grouped: Record<
               string,
               { model: ChatModel; curated: boolean }[]
             > = {};
             for (const model of allModels) {
-              const key = curatedIds.has(model.id)
-                ? "_available"
-                : model.provider;
+              const key = "_available";
               if (!grouped[key]) {
                 grouped[key] = [];
               }
-              grouped[key].push({ model, curated: curatedIds.has(model.id) });
+              grouped[key].push({ model, curated: true });
             }
 
             const sortedKeys = Object.keys(grouped).sort((a, b) => {
@@ -734,11 +878,11 @@ function PureModelSelectorCompact({
                 key={key}
               >
                 {grouped[key].map(({ model, curated }) => {
-                  const logoProvider = model.id.split("/")[0];
+                  const modelCapabilities = capabilities?.[model.id];
                   return (
                     <ModelSelectorItem
                       className={cn(
-                        "flex w-full",
+                        "flex w-full items-start gap-2 py-2",
                         model.id === selectedModel.id &&
                           "border-b border-dashed border-foreground/50",
                         !curated && "opacity-40 cursor-default"
@@ -761,18 +905,33 @@ function PureModelSelectorCompact({
                       }}
                       value={model.id}
                     >
-                      <ModelSelectorLogo provider={logoProvider} />
-                      <ModelSelectorName>{model.name}</ModelSelectorName>
-                      <div className="ml-auto flex items-center gap-2 text-foreground/70">
-                        {capabilities?.[model.id]?.tools && (
-                          <WrenchIcon className="size-3.5" />
-                        )}
-                        {capabilities?.[model.id]?.vision && (
-                          <EyeIcon className="size-3.5" />
-                        )}
-                        {capabilities?.[model.id]?.reasoning && (
-                          <BrainIcon className="size-3.5" />
-                        )}
+                      <ModelSelectorLogo
+                        className="mt-0.5"
+                        provider={model.provider}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <ModelSelectorName className="block">
+                          {model.name}
+                        </ModelSelectorName>
+                        <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                          {model.description}
+                        </div>
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {modelCapabilities?.tools && (
+                            <CapabilityTag icon={<WrenchIcon />} label="Tools" />
+                          )}
+                          {modelCapabilities?.vision && (
+                            <CapabilityTag icon={<EyeIcon />} label="Vision" />
+                          )}
+                          {modelCapabilities?.reasoning && (
+                            <CapabilityTag
+                              icon={<BrainIcon />}
+                              label="Reasoning"
+                            />
+                          )}
+                        </div>
+                      </div>
+                      <div className="ml-auto flex items-center gap-2 pt-0.5 text-foreground/70">
                         {!curated && (
                           <LockIcon className="size-3 text-muted-foreground/50" />
                         )}
@@ -791,13 +950,32 @@ function PureModelSelectorCompact({
 
 const ModelSelectorCompact = memo(PureModelSelectorCompact);
 
+function CapabilityTag({
+  icon,
+  label,
+}: {
+  icon: ReactElement<{ className?: string }>;
+  label: string;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-md border border-border/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+      {cloneElement(icon, { className: "size-3" })}
+      {label}
+    </span>
+  );
+}
+
 function PureStopButton({
+  chatId,
   stop,
   setMessages,
 }: {
+  chatId: string;
   stop: () => void;
   setMessages: UseChatHelpers<ChatMessage>["setMessages"];
 }) {
+  const { mutate } = useSWRConfig();
+
   return (
     <Button
       className="h-7 w-7 rounded-xl bg-foreground p-1 text-background transition-all duration-200 hover:opacity-85 active:scale-95 disabled:bg-muted disabled:text-muted-foreground/25 disabled:cursor-not-allowed"
@@ -805,7 +983,58 @@ function PureStopButton({
       onClick={(event) => {
         event.preventDefault();
         stop();
-        setMessages((messages) => messages);
+        setMessages((messages) => {
+          const lastMessage = messages.at(-1);
+          if (lastMessage?.role === "assistant") {
+            const hasContent = lastMessage.parts?.some(
+              (part) =>
+                (part.type === "text" && part.text?.trim()) ||
+                (part.type === "reasoning" &&
+                  "text" in part &&
+                  part.text?.trim()) ||
+                part.type.startsWith("tool-")
+            );
+
+            if (hasContent) {
+              return messages;
+            }
+
+            return [
+              ...messages.slice(0, -1),
+              {
+                ...lastMessage,
+                metadata: {
+                  ...lastMessage.metadata,
+                  createdAt:
+                    lastMessage.metadata?.createdAt ??
+                    new Date().toISOString(),
+                  status: "aborted" as const,
+                },
+                parts: [{ type: "text" as const, text: "Generation stopped." }],
+              },
+            ];
+          }
+
+          return [
+            ...messages,
+            {
+              id: generateUUID(),
+              role: "assistant" as const,
+              metadata: {
+                createdAt: new Date().toISOString(),
+                status: "aborted" as const,
+              },
+              parts: [{ type: "text" as const, text: "Generation stopped." }],
+            },
+          ];
+        });
+        toast("Generation stopped. Partial response is kept.");
+        setTimeout(() => {
+          mutate(
+            `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/messages?chatId=${chatId}`
+          );
+          mutate(unstable_serialize(getChatHistoryPaginationKey));
+        }, 800);
       }}
     >
       <StopIcon size={14} />

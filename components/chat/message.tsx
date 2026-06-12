@@ -21,19 +21,39 @@ import { MessageReasoning } from "./message-reasoning";
 import { PreviewAttachment } from "./preview-attachment";
 import { Weather } from "./weather";
 
+function getAssistantStatusText(message: ChatMessage) {
+  const status = message.metadata?.status;
+
+  if (status === "aborted") {
+    return "Generation stopped.";
+  }
+
+  if (status === "error") {
+    return "I couldn't complete this response. Please check your network or try regenerating.";
+  }
+
+  if (status === "pending" || status === "streaming") {
+    return "Waiting for the model response...";
+  }
+
+  return null;
+}
+
 const PurePreviewMessage = ({
   addToolApprovalResponse,
+  canRegenerate,
   chatId,
   message,
   vote,
   isLoading,
   setMessages: _setMessages,
-  regenerate: _regenerate,
+  regenerate,
   isReadonly,
   requiresScrollPadding: _requiresScrollPadding,
   onEdit,
 }: {
   addToolApprovalResponse: UseChatHelpers<ChatMessage>["addToolApprovalResponse"];
+  canRegenerate: boolean;
   chatId: string;
   message: ChatMessage;
   vote: Vote | undefined;
@@ -62,6 +82,8 @@ const PurePreviewMessage = ({
       part.type.startsWith("tool-")
   );
   const isThinking = isAssistant && isLoading && !hasAnyContent;
+  const assistantStatusText =
+    isAssistant && !hasAnyContent ? getAssistantStatusText(message) : null;
 
   const attachments = attachmentsFromMessage.length > 0 && (
     <div
@@ -307,13 +329,24 @@ const PurePreviewMessage = ({
   const actions = !isReadonly && (
     <MessageActions
       chatId={chatId}
+      canRegenerate={canRegenerate}
       isLoading={isLoading}
       key={`action-${message.id}`}
       message={message}
       onEdit={onEdit ? () => onEdit(message) : undefined}
+      regenerate={regenerate}
       vote={vote}
     />
   );
+
+  const fallbackStatusContent = assistantStatusText ? (
+    <MessageContent
+      className="text-[13px] leading-[1.65] text-muted-foreground"
+      data-testid="message-status-content"
+    >
+      <MessageResponse>{assistantStatusText}</MessageResponse>
+    </MessageContent>
+  ) : null;
 
   const content = isThinking ? (
     <div className="flex h-[calc(13px*1.65)] items-center text-[13px] leading-[1.65]">
@@ -325,6 +358,7 @@ const PurePreviewMessage = ({
     <>
       {attachments}
       {parts}
+      {fallbackStatusContent}
       {actions}
     </>
   );
