@@ -1,0 +1,278 @@
+Error: Route "/" used `Date.now()` before accessing either uncached data (e.g. `fetch()`) or Request data (e.g. `cookies()`, `headers()`, `connection()`, and `searchParams`). Accessing the current time in a Server Component requires reading one of these data sources first. Alternatively, consider moving this expression into a Client Component or Cache Component. See more info here: https://nextjs.org/docs/messages/next-prerender-current-time
+    at auth (app\(auth)\auth.ts:112:30)
+    at SidebarShell (app\(chat)\layout.tsx:29:57)
+    at Layout (app\(chat)\layout.tsx:21:11)
+  110 |         type: "guest" as const,
+  111 |       },
+> 112 |       expires: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      |                              ^
+  113 |     };
+  114 |   }
+  115 |
+Error: Route "/" used `Date.now()` before accessing either uncached data (e.g. `fetch()`) or Request data (e.g. `cookies()`, `headers()`, `connection()`, and `searchParams`). Accessing the current time in a Server Component requires reading one of these data sources first. Alternatively, consider moving this expression into a Client Component or Cache Component. See more info here: https://nextjs.org/docs/messages/next-prerender-current-time
+    at auth (app\(auth)\auth.ts:112:30)
+    at SidebarShell (app\(chat)\layout.tsx:29:57)
+    at Layout (app\(chat)\layout.tsx:21:11)
+  110 |         type: "guest" as const,
+  111 |       },
+> 112 |       expires: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      |                              ^
+  113 |     };
+  114 |   }
+  115 |
+Error: Route "/" used `Date.now()` before accessing either uncached data (e.g. `fetch()`) or Request data (e.g. `cookies()`, `headers()`, `connection()`, and `searchParams`). Accessing the current time in a Server Component requires reading one of these data sources first. Alternatively, consider moving this expression into a Client Component or Cache Component. See more info here: https://nextjs.org/docs/messages/next-prerender-current-time
+    at auth (app\(auth)\auth.ts:112:30)
+    at SidebarShell (app\(chat)\layout.tsx:29:57)
+    at Layout (app\(chat)\layout.tsx:21:11)
+  110 |         type: "guest" as const,
+  111 |       },
+> 112 |       expires: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      |                              ^
+  113 |     };
+  114 |   }
+  115 |
+[browser] Error: Route "/" used `Date.now()` before accessing either uncached data (e.g. `fetch()`) or Request data (e.g. `cookies()`, `headers()`, `connection()`, and `searchParams`). Accessing the current time in a Server Component requires reading one of these data sources first. Alternatively, consider moving this expression into a Client Component or Cache Component. See more info here: https://nextjs.org/docs/messages/next-prerender-current-time
+    at auth (app\(auth)\auth.ts:112:30)
+    at SidebarShell (app\(chat)\layout.tsx:29:57)
+    at Layout (app\(chat)\layout.tsx:21:11)
+  110 |         type: "guest" as const,
+  111 |       },
+> 112 |       expires: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      |                              ^
+  113 |     };
+  114 |   }
+  115 |
+Error: Route "/" used `Date.now()` before accessing either uncached data (e.g. `fetch()`) or Request data (e.g. `cookies()`, `headers()`, `connection()`, and `searchParams`). Accessing the current time in a Server Component requires reading one of these data sources first. Alternatively, consider moving this expression into a Client Component or Cache Component. See more info here: https://nextjs.org/docs/messages/next-prerender-current-time
+    at auth (app\(auth)\auth.ts:112:30)
+    at SidebarShell (app\(chat)\layout.tsx:29:57)
+    at Layout (app\(chat)\layout.tsx:21:11)
+  110 |         type: "guest" as const,
+  111 |       },
+> 112 |       expires: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      |                              ^
+  113 |     };
+  114 |   }
+  115 |
+[browser] Error: Route "/" used `Date.now()` before accessing either uncached data (e.g. `fetch()`) or Request data (e.g. `cookies()`, `headers()`, `connection()`, and `searchParams`). Accessing the current time in a Server Component requires reading one of these data sources first. Alternatively, consider moving this expression into a Client Component or Cache Component. See more info here: https://nextjs.org/docs/messages/next-prerender-current-time
+    at auth (app\(auth)\auth.ts:112:30)
+    at SidebarShell (app\(chat)\layout.tsx:29:57)
+    at Layout (app\(chat)\layout.tsx:21:11)
+  110 |         type: "guest" as const,
+  111 |       },
+> 112 |       expires: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      |                              ^
+  113 |     };
+  114 |   }
+  115 |
+[Dev Only] Without setting the developmentOptions.bypass value, the bot protection will return HUMAN.
+[Dev Only] Without setting the developmentOptions.bypass value, the bot protection will return HUMAN.
+⨯ Error: Unauthorized
+    at updateChatVisibility (app\(chat)\actions.ts:78:11)
+  76 |   const chat = await getChatById({ id: chatId });
+  77 |   if (!chat || chat.userId !== session.user.id) {
+> 78 |     throw new Error("Unauthorized");
+     |           ^
+  79 |   }
+  80 |
+  81 |   await updateChatVisibilityById({ chatId, visibility }); {
+  digest: '3831677314'
+}
+[browser] ⨯ unhandledRejection: Error: Unauthorized
+    at updateChatVisibility (app\(chat)\actions.ts:78:11)
+  76 |   const chat = await getChatById({ id: chatId });
+  77 |   if (!chat || chat.userId !== session.user.id) {
+> 78 |     throw new Error("Unauthorized");
+     |           ^
+  79 |   }
+  80 |
+  81 |   await updateChatVisibilityById({ chatId, visibility });
+⨯ Error: Unauthorized
+    at updateChatVisibility (app\(chat)\actions.ts:78:11)
+  76 |   const chat = await getChatById({ id: chatId });
+  77 |   if (!chat || chat.userId !== session.user.id) {
+> 78 |     throw new Error("Unauthorized");
+     |           ^
+  79 |   }
+  80 |
+  81 |   await updateChatVisibilityById({ chatId, visibility }); {
+  digest: '3831677314'
+}
+[browser] ⨯ unhandledRejection: Error: Unauthorized
+    at updateChatVisibility (app\(chat)\actions.ts:78:11)
+  76 |   const chat = await getChatById({ id: chatId });
+  77 |   if (!chat || chat.userId !== session.user.id) {
+> 78 |     throw new Error("Unauthorized");
+     |           ^
+  79 |   }
+  80 |
+  81 |   await updateChatVisibilityById({ chatId, visibility });
+Failed to proxy https://api.vercel.com/bot-protection/v1/challenge?i=2&v=3&h=localhost%3A3000 Error: getaddrinfo ENOTFOUND api.vercel.com
+    at ignore-listed frames {
+  errno: -3008,
+  code: 'ENOTFOUND',
+  syscall: 'getaddrinfo',
+  hostname: 'api.vercel.com'
+}
+Error: getaddrinfo ENOTFOUND api.vercel.com
+    at ignore-listed frames {
+  errno: -3008,
+  code: 'ENOTFOUND',
+  syscall: 'getaddrinfo',
+  hostname: 'api.vercel.com'
+}
+[browser] Error loading script [object Event] 
+⨯ Error: Unauthorized
+    at updateChatVisibility (app\(chat)\actions.ts:78:11)
+  76 |   const chat = await getChatById({ id: chatId });
+  77 |   if (!chat || chat.userId !== session.user.id) {
+> 78 |     throw new Error("Unauthorized");
+     |           ^
+  79 |   }
+  80 |
+  81 |   await updateChatVisibilityById({ chatId, visibility }); {
+  digest: '122266660'
+}
+Error: Route "/" used `Date.now()` before accessing either uncached data (e.g. `fetch()`) or Request data (e.g. `cookies()`, `headers()`, `connection()`, and `searchParams`). Accessing the current time in a Server Component requires reading one of these data sources first. Alternatively, consider moving this expression into a Client Component or Cache Component. See more info here: https://nextjs.org/docs/messages/next-prerender-current-time
+    at auth (app\(auth)\auth.ts:112:30)
+    at SidebarShell (app\(chat)\layout.tsx:29:57)
+    at Layout (app\(chat)\layout.tsx:21:11)
+  110 |         type: "guest" as const,
+  111 |       },
+> 112 |       expires: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      |                              ^
+  113 |     };
+  114 |   }
+  115 |
+Error: Route "/" used `Date.now()` before accessing either uncached data (e.g. `fetch()`) or Request data (e.g. `cookies()`, `headers()`, `connection()`, and `searchParams`). Accessing the current time in a Server Component requires reading one of these data sources first. Alternatively, consider moving this expression into a Client Component or Cache Component. See more info here: https://nextjs.org/docs/messages/next-prerender-current-time
+    at auth (app\(auth)\auth.ts:112:30)
+    at SidebarShell (app\(chat)\layout.tsx:29:57)
+    at Layout (app\(chat)\layout.tsx:21:11)
+  110 |         type: "guest" as const,
+  111 |       },
+> 112 |       expires: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      |                              ^
+  113 |     };
+  114 |   }
+  115 |
+Error: Route "/" used `Date.now()` before accessing either uncached data (e.g. `fetch()`) or Request data (e.g. `cookies()`, `headers()`, `connection()`, and `searchParams`). Accessing the current time in a Server Component requires reading one of these data sources first. Alternatively, consider moving this expression into a Client Component or Cache Component. See more info here: https://nextjs.org/docs/messages/next-prerender-current-time
+    at auth (app\(auth)\auth.ts:112:30)
+    at SidebarShell (app\(chat)\layout.tsx:29:57)
+    at Layout (app\(chat)\layout.tsx:21:11)
+  110 |         type: "guest" as const,
+  111 |       },
+> 112 |       expires: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      |                              ^
+  113 |     };
+  114 |   }
+  115 |
+Error: Route "/" used `Date.now()` before accessing either uncached data (e.g. `fetch()`) or Request data (e.g. `cookies()`, `headers()`, `connection()`, and `searchParams`). Accessing the current time in a Server Component requires reading one of these data sources first. Alternatively, consider moving this expression into a Client Component or Cache Component. See more info here: https://nextjs.org/docs/messages/next-prerender-current-time
+    at auth (app\(auth)\auth.ts:112:30)
+    at SidebarShell (app\(chat)\layout.tsx:29:57)
+    at Layout (app\(chat)\layout.tsx:21:11)
+  110 |         type: "guest" as const,
+  111 |       },
+> 112 |       expires: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      |                              ^
+  113 |     };
+  114 |   }
+  115 |
+[browser] Error: Route "/" used `Date.now()` before accessing either uncached data (e.g. `fetch()`) or Request data (e.g. `cookies()`, `headers()`, `connection()`, and `searchParams`). Accessing the current time in a Server Component requires reading one of these data sources first. Alternatively, consider moving this expression into a Client Component or Cache Component. See more info here: https://nextjs.org/docs/messages/next-prerender-current-time
+    at auth (app\(auth)\auth.ts:112:30)
+    at SidebarShell (app\(chat)\layout.tsx:29:57)
+    at Layout (app\(chat)\layout.tsx:21:11)
+  110 |         type: "guest" as const,
+  111 |       },
+> 112 |       expires: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      |                              ^
+  113 |     };
+  114 |   }
+  115 |
+[browser] ⨯ unhandledRejection: Error: Unauthorized
+    at updateChatVisibility (app\(chat)\actions.ts:78:11)
+  76 |   const chat = await getChatById({ id: chatId });
+  77 |   if (!chat || chat.userId !== session.user.id) {
+> 78 |     throw new Error("Unauthorized");
+     |           ^
+  79 |   }
+  80 |
+  81 |   await updateChatVisibilityById({ chatId, visibility });
+⨯ Error: Unauthorized
+    at updateChatVisibility (app\(chat)\actions.ts:78:11)
+  76 |   const chat = await getChatById({ id: chatId });
+  77 |   if (!chat || chat.userId !== session.user.id) {
+> 78 |     throw new Error("Unauthorized");
+     |           ^
+  79 |   }
+  80 |
+  81 |   await updateChatVisibilityById({ chatId, visibility }); {
+  digest: '122266660'
+}
+[browser] ⨯ unhandledRejection: Error: Unauthorized
+    at updateChatVisibility (app\(chat)\actions.ts:78:11)
+  76 |   const chat = await getChatById({ id: chatId });
+  77 |   if (!chat || chat.userId !== session.user.id) {
+> 78 |     throw new Error("Unauthorized");
+     |           ^
+  79 |   }
+  80 |
+  81 |   await updateChatVisibilityById({ chatId, visibility });
+⨯ Error: Unauthorized
+    at updateChatVisibility (app\(chat)\actions.ts:78:11)
+  76 |   const chat = await getChatById({ id: chatId });
+  77 |   if (!chat || chat.userId !== session.user.id) {
+> 78 |     throw new Error("Unauthorized");
+     |           ^
+  79 |   }
+  80 |
+  81 |   await updateChatVisibilityById({ chatId, visibility }); {
+  digest: '122266660'
+}
+[browser] ⨯ unhandledRejection: Error: Unauthorized
+    at updateChatVisibility (app\(chat)\actions.ts:78:11)
+  76 |   const chat = await getChatById({ id: chatId });
+  77 |   if (!chat || chat.userId !== session.user.id) {
+> 78 |     throw new Error("Unauthorized");
+     |           ^
+  79 |   }
+  80 |
+  81 |   await updateChatVisibilityById({ chatId, visibility });
+⨯ Error: Unauthorized
+    at updateChatVisibility (app\(chat)\actions.ts:78:11)
+  76 |   const chat = await getChatById({ id: chatId });
+  77 |   if (!chat || chat.userId !== session.user.id) {
+> 78 |     throw new Error("Unauthorized");
+     |           ^
+  79 |   }
+  80 |
+  81 |   await updateChatVisibilityById({ chatId, visibility }); {
+  digest: '122266660'
+}
+[browser] ⨯ unhandledRejection: Error: Unauthorized
+    at updateChatVisibility (app\(chat)\actions.ts:78:11)
+  76 |   const chat = await getChatById({ id: chatId });
+  77 |   if (!chat || chat.userId !== session.user.id) {
+> 78 |     throw new Error("Unauthorized");
+     |           ^
+  79 |   }
+  80 |
+  81 |   await updateChatVisibilityById({ chatId, visibility });
+⨯ Error: Unauthorized
+    at updateChatVisibility (app\(chat)\actions.ts:78:11)
+  76 |   const chat = await getChatById({ id: chatId });
+  77 |   if (!chat || chat.userId !== session.user.id) {
+> 78 |     throw new Error("Unauthorized");
+     |           ^
+  79 |   }
+  80 |
+  81 |   await updateChatVisibilityById({ chatId, visibility }); {
+  digest: '122266660'
+}
+[browser] ⨯ unhandledRejection: Error: Unauthorized
+    at updateChatVisibility (app\(chat)\actions.ts:78:11)
+  76 |   const chat = await getChatById({ id: chatId });
+  77 |   if (!chat || chat.userId !== session.user.id) {
+> 78 |     throw new Error("Unauthorized");
+     |           ^
+  79 |   }
+  80 |
+  81 |   await updateChatVisibilityById({ chatId, visibility });
