@@ -281,6 +281,40 @@ function buildRetrievedKnowledgeContext({
     .join("\n\n");
 }
 
+function buildAttachmentContext({
+  files,
+  supportsVision,
+}: {
+  files: FileRecord[];
+  supportsVision: boolean;
+}) {
+  if (files.length === 0) {
+    return "";
+  }
+
+  const attachmentLines = files.map((currentFile, index) => {
+    const isImage = currentFile.mimeType.startsWith("image/");
+    const capabilityNote =
+      isImage && !supportsVision
+        ? "This model cannot inspect image pixels directly; only OCR text can be used if parsing succeeded."
+        : currentFile.parseStatus === "parsed"
+          ? "Parsed text is available through retrieved knowledge chunks when relevant."
+          : currentFile.parseStatus === "error"
+            ? "Parsing failed, so the file is available only as an attachment preview."
+            : "No readable text was extracted, so the file is available only as an attachment preview.";
+
+    return `${index + 1}. ${currentFile.originalName} (${currentFile.mimeType}, ${currentFile.size} bytes, parseStatus=${currentFile.parseStatus}) - ${capabilityNote}`;
+  });
+
+  return [
+    "The user attached the following files in this turn.",
+    "Do not say that no file or image was uploaded if a file is listed here.",
+    "If an attached image has no OCR text and the selected model has no vision capability, explain that limitation instead of inventing visual details.",
+    "",
+    ...attachmentLines,
+  ].join("\n");
+}
+
 function prepareMessagesForModel({
   messages,
   supportsVision,
@@ -554,6 +588,10 @@ export async function POST(request: Request) {
       chunks: referencedChunks,
       questionText: getUserQuestionText(userMessage),
     });
+    const attachmentContext = buildAttachmentContext({
+      files: referencedFiles,
+      supportsVision,
+    });
     const modelUiMessages = prepareMessagesForModel({
       messages: uiMessages,
       supportsVision,
@@ -561,9 +599,17 @@ export async function POST(request: Request) {
     const baseSystemPrompt = systemPrompt({ requestHints, supportsTools });
     // Durable file metadata and chunks live in PostgreSQL; Redis remains for short-lived stream state and rate limits.
     // This lexical scorer is the swappable point for a later pgvector/embedding retriever.
-    const systemPromptWithKnowledge = knowledgeContext
-      ? `${baseSystemPrompt}\n\nUse the following retrieved knowledge chunks when they are relevant. If the chunks are not relevant, answer normally.\n\n<retrieved_knowledge>\n${knowledgeContext}\n</retrieved_knowledge>`
-      : baseSystemPrompt;
+    const systemPromptWithKnowledge = [
+      baseSystemPrompt,
+      attachmentContext
+        ? `<attached_files>\n${attachmentContext}\n</attached_files>`
+        : "",
+      knowledgeContext
+        ? `Use the following retrieved knowledge chunks when they are relevant. If the chunks are not relevant, answer normally.\n\n<retrieved_knowledge>\n${knowledgeContext}\n</retrieved_knowledge>`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
 
     // Convert to model messages
     const modelMessages = await convertToModelMessages(modelUiMessages);

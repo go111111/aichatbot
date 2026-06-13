@@ -98,6 +98,13 @@ export function ChatShell() {
               votes={votes}
             />
 
+            {isReadonly && (
+              <div className="mx-auto w-full max-w-4xl px-3 pb-3 text-center text-muted-foreground text-xs">
+                Shared read-only view. You can read this public chat, but you
+                cannot continue, edit, or upload files in it.
+              </div>
+            )}
+
             <div className="sticky bottom-0 z-1 mx-auto flex w-full max-w-4xl gap-2 border-t-0 bg-background px-2 pb-3 md:px-4 md:pb-4">
               {!isReadonly && (
                 <MultimodalInput

@@ -86,6 +86,7 @@ const TEXT_ATTACHMENT_ACCEPT =
   ".txt,.md,.csv,.json,text/plain,text/markdown,text/csv,application/json";
 const VISION_ATTACHMENT_ACCEPT =
   "image/jpeg,image/png,image/webp,image/gif,application/pdf";
+const OCR_ATTACHMENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const STANDARD_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
 const CHUNKED_UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
 
@@ -106,6 +107,14 @@ function isTextAttachment(file: Pick<File, "name" | "type">) {
   return (
     TEXT_ATTACHMENT_TYPES.has(file.type) ||
     TEXT_ATTACHMENT_EXTENSIONS.has(getFileExtension(file.name))
+  );
+}
+
+function canServerParseAttachment(file: Pick<File, "name" | "type">) {
+  return (
+    isTextAttachment(file) ||
+    file.type === "application/pdf" ||
+    OCR_ATTACHMENT_TYPES.has(file.type)
   );
 }
 
@@ -376,6 +385,21 @@ function PureMultimodalInput({
   const uploadChunkedFile = useCallback(
     async (file: File, queueId: string) => {
       const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+      let uploadId: string | undefined;
+      const cancelChunkedUpload = async () => {
+        if (!uploadId) {
+          return;
+        }
+
+        await fetch(`${basePath}/api/files/chunked/initiate`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uploadId }),
+        }).catch(() => {
+          // The visible failure state is more important than blocking the UI on cleanup.
+        });
+      };
+
       const initiateResponse = await fetch(
         `${basePath}/api/files/chunked/initiate`,
         {
@@ -395,66 +419,81 @@ function PureMultimodalInput({
         throw new Error(error ?? "Failed to start upload");
       }
 
-      const { uploadId, chunkSize, totalChunks } = await initiateResponse.json();
+      const uploadSession = await initiateResponse.json();
+      uploadId = uploadSession.uploadId;
+      const activeUploadId = String(uploadId);
+      const { chunkSize, totalChunks } = uploadSession;
 
-      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
-        const start = chunkIndex * chunkSize;
-        const end = Math.min(start + chunkSize, file.size);
-        const formData = new FormData();
-        formData.append("uploadId", uploadId);
-        formData.append("chunkIndex", String(chunkIndex));
-        formData.append("chunk", file.slice(start, end));
+      try {
+        for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+          const start = chunkIndex * chunkSize;
+          const end = Math.min(start + chunkSize, file.size);
+          const formData = new FormData();
+          formData.append("uploadId", activeUploadId);
+          formData.append("chunkIndex", String(chunkIndex));
+          formData.append("chunk", file.slice(start, end));
 
-        const chunkResponse = await fetch(`${basePath}/api/files/chunked/chunk`, {
-          method: "POST",
-          body: formData,
-        });
+          const chunkResponse = await fetch(`${basePath}/api/files/chunked/chunk`, {
+            method: "POST",
+            body: formData,
+          });
 
-        if (!chunkResponse.ok) {
-          const { error } = await chunkResponse.json();
-          throw new Error(error ?? `Failed to upload chunk ${chunkIndex + 1}`);
+          if (!chunkResponse.ok) {
+            const { error } = await chunkResponse.json();
+            throw new Error(error ?? `Failed to upload chunk ${chunkIndex + 1}`);
+          }
+
+          updateUploadQueueItem(queueId, {
+            progress: Math.round(((chunkIndex + 1) / totalChunks) * 90),
+            status: "uploading",
+          });
         }
 
         updateUploadQueueItem(queueId, {
-          progress: Math.round(((chunkIndex + 1) / totalChunks) * 90),
-          status: "uploading",
+          progress: 95,
+          status: "processing",
         });
-      }
 
-      updateUploadQueueItem(queueId, {
-        progress: 95,
-        status: "processing",
-      });
+        const completeResponse = await fetch(
+          `${basePath}/api/files/chunked/complete`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ uploadId: activeUploadId }),
+          }
+        );
 
-      const completeResponse = await fetch(
-        `${basePath}/api/files/chunked/complete`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ uploadId }),
+        if (!completeResponse.ok) {
+          const { error } = await completeResponse.json();
+          throw new Error(error ?? "Failed to complete upload");
         }
-      );
 
-      if (!completeResponse.ok) {
-        const { error } = await completeResponse.json();
-        throw new Error(error ?? "Failed to complete upload");
+        return completeResponse.json();
+      } catch (error) {
+        await cancelChunkedUpload();
+        throw error;
       }
-
-      return completeResponse.json();
     },
     [chatId, updateUploadQueueItem]
   );
 
   const uploadFile = useCallback(async (file: File, queueId: string) => {
-    const isTextFile = isTextAttachment(file);
+    const canParseOnServer = canServerParseAttachment(file);
 
     if (file.size > CHUNKED_UPLOAD_MAX_BYTES) {
       throw new Error("File size should be less than 100MB");
     }
 
-    if (!isTextFile && !supportsVisionAttachments) {
+    if (!canParseOnServer && !supportsVisionAttachments) {
       toast.info(
-        "This model can store and preview this file, but it will only read parsed text attachments."
+        "This file can be stored and previewed, but this model cannot read it directly."
+      );
+    } else if (
+      OCR_ATTACHMENT_TYPES.has(file.type) &&
+      !supportsVisionAttachments
+    ) {
+      toast.info(
+        "This model cannot see images directly. The server will try OCR and use recognized text when available."
       );
     }
 
@@ -466,18 +505,27 @@ function PureMultimodalInput({
     formData.append("file", file);
     formData.append("chatId", chatId);
 
+    let processingTimer: ReturnType<typeof setTimeout> | undefined;
+
     try {
       updateUploadQueueItem(queueId, {
         progress: 35,
         status: "uploading",
       });
-      const response = await fetch(
+      const requestPromise = fetch(
         `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/files/upload`,
         {
           method: "POST",
           body: formData,
         }
       );
+      processingTimer = setTimeout(() => {
+        updateUploadQueueItem(queueId, {
+          progress: 75,
+          status: "processing",
+        });
+      }, 800);
+      const response = await requestPromise;
 
       if (response.ok) {
         updateUploadQueueItem(queueId, {
@@ -503,6 +551,10 @@ function PureMultimodalInput({
       throw error instanceof Error
         ? error
         : new Error("Failed to upload file, please try again!");
+    } finally {
+      if (processingTimer) {
+        clearTimeout(processingTimer);
+      }
     }
   }, [chatId, supportsVisionAttachments, updateUploadQueueItem, uploadChunkedFile]);
 

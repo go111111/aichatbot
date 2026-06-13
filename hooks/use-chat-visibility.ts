@@ -76,10 +76,10 @@ export function useChatVisibility({
       toast.success(
         `New chat will be ${updatedVisibilityType === "public" ? "public" : "private"}`
       );
-      return;
+      return Promise.resolve();
     }
 
-    updateChatVisibility({
+    return updateChatVisibility({
       chatId,
       visibility: updatedVisibilityType,
     })

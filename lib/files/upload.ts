@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -56,6 +56,14 @@ const PARSEABLE_PDF_TYPES = new Set(["application/pdf"]);
 const OCR_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const OCR_LANGUAGES = process.env.OCR_LANGUAGES || "eng+chi_sim";
 const OCR_LANG_PATH = process.env.OCR_LANG_PATH;
+const IMAGE_OCR_MAX_BYTES = getPositiveIntegerEnv(
+  "IMAGE_OCR_MAX_BYTES",
+  5 * 1024 * 1024
+);
+const IMAGE_OCR_TIMEOUT_MS = getPositiveIntegerEnv(
+  "IMAGE_OCR_TIMEOUT_MS",
+  15_000
+);
 
 export function getContentType(input: { type?: string }, filename: string) {
   if (input.type && ALLOWED_CONTENT_TYPES.has(input.type)) {
@@ -73,6 +81,11 @@ export function getSafeFilename(filename: string) {
 
 function getOcrCacheDir() {
   return path.join(getUploadDir(), ".cache", "tesseract");
+}
+
+function getPositiveIntegerEnv(name: string, fallback: number) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 export async function ensureChatAccess({
@@ -123,6 +136,47 @@ async function readWholeUpload({
   return readFile(filePath);
 }
 
+async function getUploadByteLength({
+  buffer,
+  filePath,
+}: {
+  buffer?: Buffer;
+  filePath?: string;
+}) {
+  if (buffer) {
+    return buffer.byteLength;
+  }
+
+  if (!filePath) {
+    return 0;
+  }
+
+  const fileStats = await stat(filePath);
+  return fileStats.size;
+}
+
+function withTimeout<T>({
+  promise,
+  timeoutMs,
+  timeoutMessage,
+}: {
+  promise: Promise<T>;
+  timeoutMs: number;
+  timeoutMessage: string;
+}) {
+  let timeout: NodeJS.Timeout | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
+}
+
 async function parsePdfContent({
   buffer,
   filePath,
@@ -164,6 +218,12 @@ async function parseImageContent({
   filePath?: string;
 }) {
   try {
+    const byteLength = await getUploadByteLength({ buffer, filePath });
+
+    if (byteLength > IMAGE_OCR_MAX_BYTES) {
+      return { content: null, parseStatus: "unsupported" as const };
+    }
+
     const image = filePath ?? buffer;
 
     if (!image) {
@@ -173,10 +233,14 @@ async function parseImageContent({
     const { recognize } = await import("tesseract.js");
     const cachePath = getOcrCacheDir();
     await mkdir(cachePath, { recursive: true });
-    const result = await recognize(image, OCR_LANGUAGES, {
-      cachePath,
-      ...(OCR_LANG_PATH ? { langPath: OCR_LANG_PATH } : {}),
-      logger: () => undefined,
+    const result = await withTimeout({
+      promise: recognize(image, OCR_LANGUAGES, {
+        cachePath,
+        ...(OCR_LANG_PATH ? { langPath: OCR_LANG_PATH } : {}),
+        logger: () => undefined,
+      }),
+      timeoutMs: IMAGE_OCR_TIMEOUT_MS,
+      timeoutMessage: "Image OCR timed out",
     });
     const content = normalizeParsedText(result.data.text ?? "");
 

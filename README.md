@@ -42,6 +42,8 @@ REDIS_URL=redis://redis:6379
 UPLOAD_DIR=/app/uploads
 OCR_LANGUAGES=eng+chi_sim
 OCR_LANG_PATH=
+IMAGE_OCR_TIMEOUT_MS=15000
+IMAGE_OCR_MAX_BYTES=5242880
 ```
 
 For local UI development without a model key, use:
@@ -102,9 +104,13 @@ When a chat is deleted, files bound to that chat are also removed from PostgreSQ
 
 Files up to 20MB use the standard multipart upload endpoint. Larger files up to 100MB use chunked upload endpoints under `/api/files/chunked/*`: initiate an upload session, upload fixed-size chunks, then complete the upload to merge chunks into `UPLOAD_DIR` and reuse the same parse/chunk/index pipeline. The client shows upload progress, processing state, success, and failure states.
 
+Failed upload items can be removed directly from the composer. Standard upload failures best-effort delete any file already written to disk. Chunked upload failures call the cancel endpoint to remove temporary chunk files under `UPLOAD_DIR/.tmp/chunked`.
+
 For knowledge files, PostgreSQL stores both the file metadata and `FileChunk` rows. Text, Markdown, CSV, JSON, copyable PDF files, and OCR-readable images can produce parsed content. Chat requests use the current user question to keyword-score chunks and inject only the top retrieved snippets into the model prompt. Redis is reserved for short-lived rate-limit counters and stream chunk/meta cache.
 
-PDF parsing uses text embedded in the PDF, so scanned PDFs still need a later PDF-to-image OCR pipeline. Image OCR runs during upload processing and defaults to `OCR_LANGUAGES=eng+chi_sim`; clear screenshots or document photos work best. Tesseract language data is cached under `UPLOAD_DIR/.cache/tesseract`; set `OCR_LANG_PATH` if the server must use a fixed local traineddata directory.
+PDF parsing uses text embedded in the PDF, so scanned PDFs still need a later PDF-to-image OCR pipeline. Image OCR runs during upload processing and defaults to `OCR_LANGUAGES=eng+chi_sim`; clear screenshots or document photos work best. Tesseract language data is cached under `UPLOAD_DIR/.cache/tesseract`; set `OCR_LANG_PATH` if the server must use a fixed local traineddata directory. Image OCR is bounded by `IMAGE_OCR_TIMEOUT_MS` and `IMAGE_OCR_MAX_BYTES`; timeout or oversized images are still stored for preview instead of blocking the upload indefinitely.
+
+Chat visibility controls read access. `private` chats can only be loaded by the owner. `public` chats can be opened by anyone with the `/chat/{id}` link, but non-owners see a shared read-only view: they can read messages, but cannot continue the conversation, edit messages, upload files, vote, rename, or delete the chat.
 
 Back up both directories before upgrading or migrating the server.
 

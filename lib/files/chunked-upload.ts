@@ -9,6 +9,7 @@ import {
   getUploadDir,
   persistUploadedFile,
 } from "./upload";
+import { deleteStoredUploadFile } from "./storage";
 
 export type ChunkedUploadManifest = {
   uploadId: string;
@@ -92,6 +93,19 @@ export async function readManifest({
   }
 }
 
+export async function deleteChunkedUpload({
+  userId,
+  uploadId,
+}: {
+  userId: string;
+  uploadId: string;
+}) {
+  await rm(getChunkedUploadDir({ userId, uploadId }), {
+    recursive: true,
+    force: true,
+  });
+}
+
 export async function saveChunk({
   manifest,
   chunkIndex,
@@ -139,38 +153,44 @@ export async function completeChunkedUpload(manifest: ChunkedUploadManifest) {
   const targetPath = path.join(getUploadDir(), storedName);
   await mkdir(getUploadDir(), { recursive: true });
 
-  for (let chunkIndex = 0; chunkIndex < manifest.totalChunks; chunkIndex += 1) {
-    await pipeline(
-      createReadStream(
-        getChunkPath({
-          userId: manifest.userId,
-          uploadId: manifest.uploadId,
-          chunkIndex,
+  try {
+    for (let chunkIndex = 0; chunkIndex < manifest.totalChunks; chunkIndex += 1) {
+      await pipeline(
+        createReadStream(
+          getChunkPath({
+            userId: manifest.userId,
+            uploadId: manifest.uploadId,
+            chunkIndex,
+          })
+        ),
+        createWriteStream(targetPath, {
+          flags: chunkIndex === 0 ? "w" : "a",
         })
-      ),
-      createWriteStream(targetPath, {
-        flags: chunkIndex === 0 ? "w" : "a",
-      })
-    );
-  }
+      );
+    }
 
-  const savedFile = await persistUploadedFile({
-    userId: manifest.userId,
-    chatId: manifest.chatId,
-    originalName: manifest.filename,
-    storedName,
-    contentType: manifest.contentType,
-    size: manifest.size,
-    filePath: targetPath,
-  });
+    const savedFile = await persistUploadedFile({
+      userId: manifest.userId,
+      chatId: manifest.chatId,
+      originalName: manifest.filename,
+      storedName,
+      contentType: manifest.contentType,
+      size: manifest.size,
+      filePath: targetPath,
+    });
 
-  await rm(
-    getChunkedUploadDir({
+    await deleteChunkedUpload({
       userId: manifest.userId,
       uploadId: manifest.uploadId,
-    }),
-    { recursive: true, force: true }
-  );
+    });
 
-  return savedFile;
+    return savedFile;
+  } catch (error) {
+    await deleteStoredUploadFile(storedName);
+    await deleteChunkedUpload({
+      userId: manifest.userId,
+      uploadId: manifest.uploadId,
+    });
+    throw error;
+  }
 }

@@ -11,6 +11,7 @@ import {
   STANDARD_UPLOAD_MAX_BYTES,
   writeUploadedBuffer,
 } from "@/lib/files/upload";
+import { deleteStoredUploadFile } from "@/lib/files/storage";
 
 const FileSchema = z.object({
   file: z
@@ -76,9 +77,9 @@ export async function POST(request: Request) {
 
     const safeName = getSafeFilename(filename);
     const fileBuffer = Buffer.from(await file.arrayBuffer());
+    const storedName = `${Date.now()}-${randomUUID()}-${safeName}`;
 
     try {
-      const storedName = `${Date.now()}-${randomUUID()}-${safeName}`;
       await writeUploadedBuffer({
         storedName,
         buffer: fileBuffer,
@@ -95,6 +96,7 @@ export async function POST(request: Request) {
 
       return NextResponse.json(savedFile);
     } catch (_error) {
+      await deleteStoredUploadFile(storedName);
       return NextResponse.json({ error: "Upload failed" }, { status: 500 });
     }
   } catch (_error) {

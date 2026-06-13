@@ -31,7 +31,7 @@ const filePartSchema = z.object({
   ]),
   name: z.string().min(1).max(255),
   url: uploadUrlSchema,
-  size: z.number().positive().max(20 * 1024 * 1024).optional(),
+  size: z.number().positive().max(100 * 1024 * 1024).optional(),
 });
 
 const partSchema = z.union([textPartSchema, filePartSchema]);

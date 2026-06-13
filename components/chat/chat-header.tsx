@@ -2,11 +2,13 @@
 
 import { PanelLeftIcon, PencilIcon } from "lucide-react";
 import { memo, useState } from "react";
+import { toast } from "sonner";
 import { useSWRConfig } from "swr";
 import { unstable_serialize } from "swr/infinite";
 import { Button } from "@/components/ui/button";
 import { useSidebar } from "@/components/ui/sidebar";
 import { getChatHistoryPaginationKey } from "./sidebar-history";
+import { ShareIcon } from "./icons";
 import { RenameChatDialog } from "./rename-chat-dialog";
 import { VisibilitySelector, type VisibilityType } from "./visibility-selector";
 
@@ -26,6 +28,17 @@ function PureChatHeader({
   const { state, toggleSidebar, isMobile } = useSidebar();
   const { mutate } = useSWRConfig();
   const [renameOpen, setRenameOpen] = useState(false);
+  const copyShareLink = async () => {
+    if (selectedVisibilityType !== "public") {
+      toast.info("Make this chat public before sharing.");
+      return;
+    }
+
+    const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+    const url = `${window.location.origin}${basePath}/chat/${chatId}`;
+    await navigator.clipboard.writeText(url);
+    toast.success("Share link copied");
+  };
 
   if (state === "collapsed" && !isMobile) {
     return null;
@@ -67,6 +80,16 @@ function PureChatHeader({
             chatId={chatId}
             selectedVisibilityType={selectedVisibilityType}
           />
+          <Button
+            className="gap-1.5 rounded-lg border-border/50 text-muted-foreground shadow-none transition-colors hover:text-foreground focus-visible:ring-0 focus-visible:border-border/50 active:translate-y-0"
+            onClick={copyShareLink}
+            size="sm"
+            title="Copy public share link"
+            variant="outline"
+          >
+            <ShareIcon />
+            <span className="hidden sm:inline">Share</span>
+          </Button>
         </div>
       )}
 

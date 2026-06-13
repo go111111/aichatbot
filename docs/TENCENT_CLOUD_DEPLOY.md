@@ -61,6 +61,8 @@ Required values:
 ```env
 AUTH_SECRET=<the-openssl-output>
 NEXT_PUBLIC_SITE_URL=http://43.139.14.58
+AUTH_URL=http://43.139.14.58
+AUTH_SECURE_COOKIES=false
 
 POSTGRES_USER=ai_workbench
 POSTGRES_PASSWORD=<strong-password>
@@ -77,6 +79,8 @@ REDIS_URL=redis://redis:6379
 UPLOAD_DIR=/app/uploads
 OCR_LANGUAGES=eng+chi_sim
 OCR_LANG_PATH=
+IMAGE_OCR_TIMEOUT_MS=15000
+IMAGE_OCR_MAX_BYTES=5242880
 ```
 
 Keep `.env.production` only on the server. Do not commit it.
@@ -163,7 +167,17 @@ systemctl reload nginx
 
 Tencent Cloud firewall must allow port `80`. HTTPS is optional until you bind a real domain.
 
-Large files are uploaded in 4MB chunks through `/api/files/chunked/*`, then merged inside the app container. PDF text extraction and image OCR run after the upload is stored, so large PDFs or high-resolution images may stay in the client `Processing` state longer. Tesseract traineddata is cached under `UPLOAD_DIR/.cache/tesseract`; if the CVM cannot access the default language-data source, put traineddata on the server and set `OCR_LANG_PATH`. Keep `client_max_body_size 25m` for normal uploads and per-chunk requests; do not expose `data/uploads` directly through Nginx.
+When you later switch to an HTTPS domain, update these values together:
+
+```env
+NEXT_PUBLIC_SITE_URL=https://your-domain.com
+AUTH_URL=https://your-domain.com
+AUTH_SECURE_COOKIES=true
+```
+
+Large files are uploaded in 4MB chunks through `/api/files/chunked/*`, then merged inside the app container. PDF text extraction and image OCR run after the upload is stored, so large PDFs or high-resolution images may stay in the client `Processing` state longer. Tesseract traineddata is cached under `UPLOAD_DIR/.cache/tesseract`; if the CVM cannot access the default language-data source, put traineddata on the server and set `OCR_LANG_PATH`. Keep `IMAGE_OCR_TIMEOUT_MS` and `IMAGE_OCR_MAX_BYTES` bounded so OCR cannot block uploads indefinitely. Keep `client_max_body_size 25m` for normal uploads and per-chunk requests; do not expose `data/uploads` directly through Nginx.
+
+If a chunked upload fails, the client calls `DELETE /api/files/chunked/initiate` to clear the temporary upload session. If users report failed uploads leaving files behind, check `data/uploads/.tmp/chunked` and app logs.
 
 ## 7. Daily Operations
 
@@ -231,6 +245,15 @@ DeepSeek errors:
 - Confirm `DEEPSEEK_API_KEY`
 - Confirm CVM can reach `https://api.deepseek.com`
 - Check app logs for provider status codes
+
+Browser reports too many redirects:
+
+```bash
+grep -E '^(NEXT_PUBLIC_SITE_URL|AUTH_URL|AUTH_SECURE_COOKIES)=' .env.production
+curl -IL http://43.139.14.58/
+```
+
+For plain HTTP IP deployment, use `AUTH_SECURE_COOKIES=false`. For HTTPS domain deployment, use `AUTH_SECURE_COOKIES=true`.
 
 Uploads fail:
 

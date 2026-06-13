@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { memo } from "react";
+import { toast } from "sonner";
 import { useChatVisibility } from "@/hooks/use-chat-visibility";
 import type { Chat } from "@/lib/db/schema";
 import {
@@ -44,6 +45,12 @@ const PureChatItem = ({
     chatId: chat.id,
     initialVisibilityType: chat.visibility,
   });
+  const copyShareLink = async () => {
+    const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+    const url = `${window.location.origin}${basePath}/chat/${chat.id}`;
+    await navigator.clipboard.writeText(url);
+    toast.success("Share link copied");
+  };
 
   return (
     <SidebarMenuItem>
@@ -92,8 +99,9 @@ const PureChatItem = ({
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   className="cursor-pointer flex-row justify-between"
-                  onClick={() => {
-                    setVisibilityType("public");
+                  onClick={async () => {
+                    await setVisibilityType("public");
+                    await copyShareLink();
                   }}
                 >
                   <div className="flex flex-row items-center gap-2">
@@ -101,6 +109,16 @@ const PureChatItem = ({
                     <span>Public</span>
                   </div>
                   {visibilityType === "public" ? <CheckCircleFillIcon /> : null}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="cursor-pointer flex-row justify-between"
+                  disabled={visibilityType !== "public"}
+                  onClick={copyShareLink}
+                >
+                  <div className="flex flex-row items-center gap-2">
+                    <ShareIcon />
+                    <span>Copy link</span>
+                  </div>
                 </DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuPortal>

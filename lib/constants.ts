@@ -8,6 +8,36 @@ export const isTestEnvironment = Boolean(
     process.env.CI_PLAYWRIGHT
 );
 
+const truthyEnvValues = new Set(["1", "true", "yes", "on"]);
+const falsyEnvValues = new Set(["0", "false", "no", "off"]);
+
+export function shouldUseSecureAuthCookies() {
+  const explicitValue = process.env.AUTH_SECURE_COOKIES?.toLowerCase();
+
+  if (explicitValue && truthyEnvValues.has(explicitValue)) {
+    return true;
+  }
+
+  if (explicitValue && falsyEnvValues.has(explicitValue)) {
+    return false;
+  }
+
+  const siteUrl =
+    process.env.AUTH_URL ??
+    process.env.NEXTAUTH_URL ??
+    process.env.NEXT_PUBLIC_SITE_URL;
+
+  if (siteUrl?.startsWith("http://")) {
+    return false;
+  }
+
+  if (siteUrl?.startsWith("https://")) {
+    return true;
+  }
+
+  return !isDevelopmentEnvironment;
+}
+
 export const guestRegex = /^guest-\d+$/;
 
 export const DUMMY_PASSWORD = generateDummyPassword();

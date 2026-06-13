@@ -111,6 +111,84 @@ test.describe("Protected file API", () => {
     await request.delete(uploaded.url);
   });
 
+  test("can cancel a failed chunked upload session", async ({ request }) => {
+    const content = Buffer.alloc(6 * 1024 * 1024, "b");
+    const initiateResponse = await request.post("/api/files/chunked/initiate", {
+      data: JSON.stringify({
+        filename: `cancelled-upload-${Date.now()}.txt`,
+        contentType: "text/plain",
+        size: content.byteLength,
+      }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    expect(initiateResponse.ok()).toBe(true);
+
+    const uploadSession = await initiateResponse.json();
+    const firstChunkResponse = await request.post("/api/files/chunked/chunk", {
+      multipart: {
+        uploadId: uploadSession.uploadId,
+        chunkIndex: "0",
+        chunk: {
+          name: "0.part",
+          mimeType: "application/octet-stream",
+          buffer: content.subarray(0, uploadSession.chunkSize),
+        },
+      },
+    });
+
+    expect(firstChunkResponse.ok()).toBe(true);
+
+    const cancelResponse = await request.delete("/api/files/chunked/initiate", {
+      data: JSON.stringify({ uploadId: uploadSession.uploadId }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    expect(cancelResponse.ok()).toBe(true);
+    expect(await cancelResponse.json()).toMatchObject({
+      uploadId: uploadSession.uploadId,
+      deleted: true,
+    });
+
+    const completeResponse = await request.post("/api/files/chunked/complete", {
+      data: JSON.stringify({ uploadId: uploadSession.uploadId }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    expect(completeResponse.status()).toBe(404);
+  });
+
+  test("stores oversized images without blocking on OCR", async ({
+    request,
+  }) => {
+    const imageBuffer = Buffer.alloc(6 * 1024 * 1024, 1);
+    const uploadResponse = await request.post("/api/files/upload", {
+      multipart: {
+        file: {
+          name: `large-preview-${Date.now()}.png`,
+          mimeType: "image/png",
+          buffer: imageBuffer,
+        },
+      },
+    });
+
+    expect(uploadResponse.ok()).toBe(true);
+
+    const uploaded = await uploadResponse.json();
+
+    expect(uploaded.url).toBe(`/api/files/${uploaded.id}`);
+    expect(uploaded.parseStatus).toBe("unsupported");
+    expect(uploaded.textPreview).toBeNull();
+
+    const fileResponse = await request.get(uploaded.url);
+
+    expect(fileResponse.ok()).toBe(true);
+    expect(fileResponse.headers()["content-type"]).toContain("image/png");
+    expect((await fileResponse.body()).byteLength).toBe(imageBuffer.byteLength);
+
+    await request.delete(uploaded.url);
+  });
+
   test("deleting a chat also removes its uploaded files", async ({
     request,
   }) => {

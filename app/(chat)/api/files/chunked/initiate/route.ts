@@ -10,13 +10,17 @@ import {
   getContentType,
   getSafeFilename,
 } from "@/lib/files/upload";
-import { saveManifest } from "@/lib/files/chunked-upload";
+import { deleteChunkedUpload, saveManifest } from "@/lib/files/chunked-upload";
 
 const InitiateSchema = z.object({
   filename: z.string().min(1).max(255),
   contentType: z.string().optional().default(""),
   size: z.number().int().positive().max(CHUNKED_UPLOAD_MAX_BYTES),
   chatId: z.string().uuid().optional().nullable(),
+});
+
+const CancelSchema = z.object({
+  uploadId: z.string().uuid(),
 });
 
 export async function POST(request: Request) {
@@ -71,5 +75,29 @@ export async function POST(request: Request) {
     uploadId,
     chunkSize: CHUNKED_UPLOAD_CHUNK_BYTES,
     totalChunks,
+  });
+}
+
+export async function DELETE(request: Request) {
+  const session = await auth();
+
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const parsed = CancelSchema.safeParse(await request.json());
+
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Invalid upload session" }, { status: 400 });
+  }
+
+  await deleteChunkedUpload({
+    userId: session.user.id,
+    uploadId: parsed.data.uploadId,
+  });
+
+  return NextResponse.json({
+    uploadId: parsed.data.uploadId,
+    deleted: true,
   });
 }
