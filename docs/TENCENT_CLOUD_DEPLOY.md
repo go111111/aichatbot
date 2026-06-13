@@ -75,6 +75,8 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 
 REDIS_URL=redis://redis:6379
 UPLOAD_DIR=/app/uploads
+OCR_LANGUAGES=eng+chi_sim
+OCR_LANG_PATH=
 ```
 
 Keep `.env.production` only on the server. Do not commit it.
@@ -161,6 +163,8 @@ systemctl reload nginx
 
 Tencent Cloud firewall must allow port `80`. HTTPS is optional until you bind a real domain.
 
+Large files are uploaded in 4MB chunks through `/api/files/chunked/*`, then merged inside the app container. PDF text extraction and image OCR run after the upload is stored, so large PDFs or high-resolution images may stay in the client `Processing` state longer. Tesseract traineddata is cached under `UPLOAD_DIR/.cache/tesseract`; if the CVM cannot access the default language-data source, put traineddata on the server and set `OCR_LANG_PATH`. Keep `client_max_body_size 25m` for normal uploads and per-chunk requests; do not expose `data/uploads` directly through Nginx.
+
 ## 7. Daily Operations
 
 View logs:
@@ -236,3 +240,5 @@ docker compose exec app sh -lc 'ls -lah /app/uploads && touch /app/uploads/.writ
 ```
 
 Do not add an Nginx `alias` or static file rule for `data/uploads`. Production file reads should stay behind the app route `/api/files/{id}` so Auth.js session, file ownership, and chat ownership checks run before the file stream is returned. `/uploads/...` is only a compatibility/development route.
+
+Deleting a chat also removes its chat-scoped file metadata, chunks, and stored files on a best-effort basis. Disk deletion failures are logged by the app, so include `docker compose logs -f app` when troubleshooting leaked upload files.

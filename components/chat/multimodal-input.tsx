@@ -86,6 +86,16 @@ const TEXT_ATTACHMENT_ACCEPT =
   ".txt,.md,.csv,.json,text/plain,text/markdown,text/csv,application/json";
 const VISION_ATTACHMENT_ACCEPT =
   "image/jpeg,image/png,image/webp,image/gif,application/pdf";
+const STANDARD_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
+const CHUNKED_UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
+
+type UploadQueueItem = {
+  id: string;
+  name: string;
+  status: "uploading" | "processing" | "error";
+  progress: number;
+  error?: string;
+};
 
 function getFileExtension(name: string) {
   const dotIndex = name.lastIndexOf(".");
@@ -242,7 +252,7 @@ function PureMultimodalInput({
   };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [uploadQueue, setUploadQueue] = useState<string[]>([]);
+  const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
   const [slashIndex, setSlashIndex] = useState(0);
@@ -354,8 +364,93 @@ function PureMultimodalInput({
     selectedVisibilityType,
   ]);
 
-  const uploadFile = useCallback(async (file: File) => {
+  const updateUploadQueueItem = useCallback(
+    (id: string, patch: Partial<UploadQueueItem>) => {
+      setUploadQueue((items) =>
+        items.map((item) => (item.id === id ? { ...item, ...patch } : item))
+      );
+    },
+    []
+  );
+
+  const uploadChunkedFile = useCallback(
+    async (file: File, queueId: string) => {
+      const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+      const initiateResponse = await fetch(
+        `${basePath}/api/files/chunked/initiate`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: file.name,
+            contentType: file.type,
+            size: file.size,
+            chatId,
+          }),
+        }
+      );
+
+      if (!initiateResponse.ok) {
+        const { error } = await initiateResponse.json();
+        throw new Error(error ?? "Failed to start upload");
+      }
+
+      const { uploadId, chunkSize, totalChunks } = await initiateResponse.json();
+
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+        const start = chunkIndex * chunkSize;
+        const end = Math.min(start + chunkSize, file.size);
+        const formData = new FormData();
+        formData.append("uploadId", uploadId);
+        formData.append("chunkIndex", String(chunkIndex));
+        formData.append("chunk", file.slice(start, end));
+
+        const chunkResponse = await fetch(`${basePath}/api/files/chunked/chunk`, {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!chunkResponse.ok) {
+          const { error } = await chunkResponse.json();
+          throw new Error(error ?? `Failed to upload chunk ${chunkIndex + 1}`);
+        }
+
+        updateUploadQueueItem(queueId, {
+          progress: Math.round(((chunkIndex + 1) / totalChunks) * 90),
+          status: "uploading",
+        });
+      }
+
+      updateUploadQueueItem(queueId, {
+        progress: 95,
+        status: "processing",
+      });
+
+      const completeResponse = await fetch(
+        `${basePath}/api/files/chunked/complete`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uploadId }),
+        }
+      );
+
+      if (!completeResponse.ok) {
+        const { error } = await completeResponse.json();
+        throw new Error(error ?? "Failed to complete upload");
+      }
+
+      return completeResponse.json();
+    },
+    [chatId, updateUploadQueueItem]
+  );
+
+  const uploadFile = useCallback(async (file: File, queueId: string) => {
     const isTextFile = isTextAttachment(file);
+
+    if (file.size > CHUNKED_UPLOAD_MAX_BYTES) {
+      throw new Error("File size should be less than 100MB");
+    }
 
     if (!isTextFile && !supportsVisionAttachments) {
       toast.info(
@@ -363,11 +458,19 @@ function PureMultimodalInput({
       );
     }
 
+    if (file.size > STANDARD_UPLOAD_MAX_BYTES) {
+      return uploadChunkedFile(file, queueId);
+    }
+
     const formData = new FormData();
     formData.append("file", file);
     formData.append("chatId", chatId);
 
     try {
+      updateUploadQueueItem(queueId, {
+        progress: 35,
+        status: "uploading",
+      });
       const response = await fetch(
         `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/files/upload`,
         {
@@ -377,6 +480,10 @@ function PureMultimodalInput({
       );
 
       if (response.ok) {
+        updateUploadQueueItem(queueId, {
+          progress: 90,
+          status: "processing",
+        });
         const data = await response.json();
         const { id, url, pathname, contentType, size, parseStatus, textPreview } = data;
 
@@ -391,11 +498,13 @@ function PureMultimodalInput({
         };
       }
       const { error } = await response.json();
-      toast.error(error);
-    } catch (_error) {
-      toast.error("Failed to upload file, please try again!");
+      throw new Error(error ?? "Failed to upload file");
+    } catch (error) {
+      throw error instanceof Error
+        ? error
+        : new Error("Failed to upload file, please try again!");
     }
-  }, [chatId, supportsVisionAttachments]);
+  }, [chatId, supportsVisionAttachments, updateUploadQueueItem, uploadChunkedFile]);
 
   const removeAttachment = useCallback(
     (attachment: Attachment) => {
@@ -422,14 +531,41 @@ function PureMultimodalInput({
   const handleFileChange = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(event.target.files || []);
+      const queueItems = files.map((file) => ({
+        id: generateUUID(),
+        name: file.name,
+        status: "uploading" as const,
+        progress: 0,
+      }));
 
-      setUploadQueue(files.map((file) => file.name));
+      setUploadQueue((items) => [...items, ...queueItems]);
 
       try {
-        const uploadPromises = files.map((file) => uploadFile(file));
-        const uploadedAttachments = await Promise.all(uploadPromises);
+        const uploadedAttachments = await Promise.all(
+          files.map(async (file, index) => {
+            const queueItem = queueItems[index];
+
+            try {
+              const attachment = await uploadFile(file, queueItem.id);
+              updateUploadQueueItem(queueItem.id, {
+                progress: 100,
+                status: "processing",
+              });
+              return attachment;
+            } catch (error) {
+              updateUploadQueueItem(queueItem.id, {
+                status: "error",
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : "Failed to upload file",
+              });
+              return undefined;
+            }
+          })
+        );
         const successfullyUploadedAttachments = uploadedAttachments.filter(
-          (attachment) => attachment !== undefined
+          (attachment): attachment is Attachment => attachment !== undefined
         );
 
         setAttachments((currentAttachments) => [
@@ -439,10 +575,12 @@ function PureMultimodalInput({
       } catch (_error) {
         toast.error("Failed to upload files");
       } finally {
-        setUploadQueue([]);
+        setUploadQueue((items) =>
+          items.filter((item) => item.status === "error")
+        );
       }
     },
-    [setAttachments, uploadFile]
+    [setAttachments, updateUploadQueueItem, uploadFile]
   );
 
   const handlePaste = useCallback(
@@ -462,15 +600,39 @@ function PureMultimodalInput({
 
       event.preventDefault();
 
-      setUploadQueue((prev) => [...prev, "Pasted image"]);
+      const queueItems = imageItems
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => file !== null)
+        .map((file) => ({
+          id: generateUUID(),
+          name: file.name || "Pasted image",
+          file,
+          status: "uploading" as const,
+          progress: 0,
+        }));
+
+      setUploadQueue((prev) => [
+        ...prev,
+        ...queueItems.map(({ file: _file, ...item }) => item),
+      ]);
 
       try {
-        const uploadPromises = imageItems
-          .map((item) => item.getAsFile())
-          .filter((file): file is File => file !== null)
-          .map((file) => uploadFile(file));
-
-        const uploadedAttachments = await Promise.all(uploadPromises);
+        const uploadedAttachments = await Promise.all(
+          queueItems.map(async (item) => {
+            try {
+              return await uploadFile(item.file, item.id);
+            } catch (error) {
+              updateUploadQueueItem(item.id, {
+                status: "error",
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : "Failed to upload pasted image",
+              });
+              return undefined;
+            }
+          })
+        );
         const successfullyUploadedAttachments = uploadedAttachments.filter(
           (attachment) =>
             attachment !== undefined &&
@@ -485,10 +647,12 @@ function PureMultimodalInput({
       } catch (_error) {
         toast.error("Failed to upload pasted image(s)");
       } finally {
-        setUploadQueue([]);
+        setUploadQueue((items) =>
+          items.filter((item) => item.status === "error")
+        );
       }
     },
-    [setAttachments, uploadFile]
+    [setAttachments, updateUploadQueueItem, uploadFile]
   );
 
   useEffect(() => {
@@ -502,6 +666,9 @@ function PureMultimodalInput({
   }, [handlePaste]);
 
   const canSubmit = input.trim().length > 0 || attachments.length > 0;
+  const hasActiveUpload = uploadQueue.some(
+    (item) => item.status === "uploading" || item.status === "processing"
+  );
 
   return (
     <div className={cn("relative flex w-full flex-col gap-4", className)}>
@@ -588,15 +755,26 @@ function PureMultimodalInput({
               />
             ))}
 
-            {uploadQueue.map((filename) => (
+            {uploadQueue.map((item) => (
               <PreviewAttachment
                 attachment={{
                   url: "",
-                  name: filename,
+                  name: item.name,
                   contentType: "",
                 }}
-                isUploading={true}
-                key={filename}
+                error={item.error}
+                isUploading={item.status !== "error"}
+                key={item.id}
+                onRemove={
+                  item.status === "error"
+                    ? () =>
+                        setUploadQueue((items) =>
+                          items.filter((currentItem) => currentItem.id !== item.id)
+                        )
+                    : undefined
+                }
+                progress={item.progress}
+                uploadStatus={item.status}
               />
             ))}
           </div>
@@ -668,7 +846,7 @@ function PureMultimodalInput({
                   : "bg-muted text-muted-foreground/25 cursor-not-allowed"
               )}
               data-testid="send-button"
-              disabled={!canSubmit || uploadQueue.length > 0}
+              disabled={!canSubmit || hasActiveUpload}
               status={status}
               variant="secondary"
             >
@@ -749,7 +927,7 @@ function PureAttachmentsButton({
         event.preventDefault();
         fileInputRef.current?.click();
       }}
-      title={hasVision ? "Attach files" : "Attach text files"}
+      title={hasVision ? "Attach files" : "Attach files"}
       variant="ghost"
     >
       <PaperclipIcon size={14} style={{ width: 14, height: 14 }} />

@@ -15,7 +15,9 @@ The production default is direct DeepSeek API access. OpenAI and mock providers 
 - Redis-backed IP rate limiting and active stream cache
 - Local filesystem upload storage through `UPLOAD_DIR`
 - Authenticated file access through `/api/files/{id}`
-- Lightweight knowledge retrieval with text file chunking and keyword scoring
+- Chunked uploads for files larger than 20MB, with merge and processing status
+- PDF text extraction and image OCR for knowledge uploads
+- Lightweight knowledge retrieval with file chunking and keyword scoring
 - Docker Compose deployment for a standard Tencent Cloud CVM
 
 ## Environment
@@ -38,6 +40,8 @@ DEEPSEEK_API_KEY=replace-with-your-deepseek-api-key
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 REDIS_URL=redis://redis:6379
 UPLOAD_DIR=/app/uploads
+OCR_LANGUAGES=eng+chi_sim
+OCR_LANG_PATH=
 ```
 
 For local UI development without a model key, use:
@@ -94,7 +98,13 @@ Uploaded files are stored on disk, but production reads should go through `/api/
 
 Uploaded files can be deleted through `DELETE /api/files/{id}`. The route uses the same ownership checks, removes `FileChunk` rows and file metadata, then best-effort deletes the stored disk file.
 
-For text knowledge files, PostgreSQL stores both the file metadata and `FileChunk` rows. Chat requests use the current user question to keyword-score chunks and inject only the top retrieved snippets into the model prompt. Redis is reserved for short-lived rate-limit counters and stream chunk/meta cache.
+When a chat is deleted, files bound to that chat are also removed from PostgreSQL and best-effort deleted from `UPLOAD_DIR`. This prevents chat-scoped attachments from becoming inaccessible orphan files.
+
+Files up to 20MB use the standard multipart upload endpoint. Larger files up to 100MB use chunked upload endpoints under `/api/files/chunked/*`: initiate an upload session, upload fixed-size chunks, then complete the upload to merge chunks into `UPLOAD_DIR` and reuse the same parse/chunk/index pipeline. The client shows upload progress, processing state, success, and failure states.
+
+For knowledge files, PostgreSQL stores both the file metadata and `FileChunk` rows. Text, Markdown, CSV, JSON, copyable PDF files, and OCR-readable images can produce parsed content. Chat requests use the current user question to keyword-score chunks and inject only the top retrieved snippets into the model prompt. Redis is reserved for short-lived rate-limit counters and stream chunk/meta cache.
+
+PDF parsing uses text embedded in the PDF, so scanned PDFs still need a later PDF-to-image OCR pipeline. Image OCR runs during upload processing and defaults to `OCR_LANGUAGES=eng+chi_sim`; clear screenshots or document photos work best. Tesseract language data is cached under `UPLOAD_DIR/.cache/tesseract`; set `OCR_LANG_PATH` if the server must use a fixed local traineddata directory.
 
 Back up both directories before upgrading or migrating the server.
 

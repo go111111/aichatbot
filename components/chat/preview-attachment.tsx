@@ -6,19 +6,27 @@ import { CrossSmallIcon } from "./icons";
 export const PreviewAttachment = ({
   attachment,
   isUploading = false,
+  uploadStatus,
+  progress,
+  error,
   onRemove,
 }: {
   attachment: Attachment;
   isUploading?: boolean;
+  uploadStatus?: "uploading" | "processing" | "error";
+  progress?: number;
+  error?: string;
   onRemove?: () => void;
 }) => {
   const { name, url, contentType, parseStatus } = attachment;
+  const isImage = contentType?.startsWith("image");
   const isTextLike =
     contentType === "text/plain" ||
     contentType === "text/markdown" ||
     contentType === "text/csv" ||
     contentType === "application/json";
-  const label = contentType === "application/pdf" ? "PDF" : isTextLike ? "Text" : "File";
+  const label =
+    contentType === "application/pdf" ? "PDF" : isTextLike ? "Text" : "File";
   const statusLabel =
     parseStatus === "parsed"
       ? "Parsed"
@@ -33,15 +41,22 @@ export const PreviewAttachment = ({
       className="group relative h-24 w-24 shrink-0 overflow-hidden rounded-xl border border-border/40 bg-muted"
       data-testid="input-attachment-preview"
     >
-      {contentType?.startsWith("image") ? (
-        <Image
-          alt={name ?? "attachment"}
-          className="size-full object-cover"
-          height={96}
-          src={url}
-          unoptimized={url.startsWith("/api/files/")}
-          width={96}
-        />
+      {isImage ? (
+        <>
+          <Image
+            alt={name ?? "attachment"}
+            className="size-full object-cover"
+            height={96}
+            src={url}
+            unoptimized={url.startsWith("/api/files/")}
+            width={96}
+          />
+          {statusLabel && (
+            <span className="absolute right-1 bottom-1 left-1 truncate rounded bg-black/60 px-1 py-0.5 text-center text-[10px] text-white backdrop-blur-sm">
+              {statusLabel}
+            </span>
+          )}
+        </>
       ) : (
         <div className="flex size-full flex-col items-center justify-center gap-1 px-2 text-center text-muted-foreground text-xs">
           <span className="font-medium text-foreground/70">{label}</span>
@@ -54,16 +69,37 @@ export const PreviewAttachment = ({
         </div>
       )}
 
-      {isUploading && (
+      {(isUploading || uploadStatus) && (
         <div
-          className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/40 backdrop-blur-sm"
+          className="absolute inset-0 flex flex-col items-center justify-center gap-1 rounded-xl bg-black/50 px-2 text-center text-white backdrop-blur-sm"
           data-testid="input-attachment-loader"
         >
-          <Spinner className="size-5" />
+          {uploadStatus === "error" ? (
+            <>
+              <span className="font-medium text-[11px]">Error</span>
+              <span className="line-clamp-2 text-[10px] text-white/80">
+                {error ?? "Upload failed"}
+              </span>
+            </>
+          ) : (
+            <>
+              <Spinner className="size-5" />
+              <span className="text-[10px]">
+                {uploadStatus === "processing"
+                  ? "Processing"
+                  : typeof progress === "number"
+                    ? `${progress}%`
+                    : "Uploading"}
+              </span>
+            </>
+          )}
         </div>
       )}
 
-      {onRemove && !isUploading && (
+      {onRemove &&
+        !isUploading &&
+        uploadStatus !== "processing" &&
+        uploadStatus !== "uploading" && (
         <button
           className="absolute top-1.5 right-1.5 flex size-5 items-center justify-center rounded-full bg-black/60 text-white opacity-0 backdrop-blur-sm transition-opacity hover:bg-black/80 group-hover:opacity-100"
           onClick={onRemove}
@@ -71,7 +107,7 @@ export const PreviewAttachment = ({
         >
           <CrossSmallIcon size={10} />
         </button>
-      )}
+        )}
     </div>
   );
 };

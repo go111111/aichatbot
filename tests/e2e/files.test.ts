@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { randomUUID } from "node:crypto";
 
 test.describe("Protected file API", () => {
   test("uploads, reads, and deletes a text knowledge file", async ({
@@ -39,6 +40,123 @@ test.describe("Protected file API", () => {
     expect(await deleteResponse.json()).toMatchObject({
       id: uploaded.id,
       deleted: true,
+    });
+
+    const deletedFileResponse = await request.get(uploaded.url);
+
+    expect(deletedFileResponse.status()).toBe(404);
+  });
+
+  test("uploads a large text file with chunked upload", async ({ request }) => {
+    const chunkSize = 4 * 1024 * 1024;
+    const content = Buffer.alloc(21 * 1024 * 1024, "a");
+    content.write("chunked upload knowledge marker", 0, "utf8");
+
+    const initiateResponse = await request.post("/api/files/chunked/initiate", {
+      data: JSON.stringify({
+        filename: `large-knowledge-${Date.now()}.txt`,
+        contentType: "text/plain",
+        size: content.byteLength,
+      }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    expect(initiateResponse.ok()).toBe(true);
+
+    const uploadSession = await initiateResponse.json();
+
+    expect(uploadSession.chunkSize).toBe(chunkSize);
+    expect(uploadSession.totalChunks).toBeGreaterThan(1);
+
+    for (
+      let chunkIndex = 0;
+      chunkIndex < uploadSession.totalChunks;
+      chunkIndex += 1
+    ) {
+      const start = chunkIndex * uploadSession.chunkSize;
+      const end = Math.min(start + uploadSession.chunkSize, content.byteLength);
+      const chunkResponse = await request.post("/api/files/chunked/chunk", {
+        multipart: {
+          uploadId: uploadSession.uploadId,
+          chunkIndex: String(chunkIndex),
+          chunk: {
+            name: `${chunkIndex}.part`,
+            mimeType: "application/octet-stream",
+            buffer: content.subarray(start, end),
+          },
+        },
+      });
+
+      expect(chunkResponse.ok()).toBe(true);
+    }
+
+    const completeResponse = await request.post("/api/files/chunked/complete", {
+      data: JSON.stringify({ uploadId: uploadSession.uploadId }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    expect(completeResponse.ok()).toBe(true);
+
+    const uploaded = await completeResponse.json();
+
+    expect(uploaded.url).toBe(`/api/files/${uploaded.id}`);
+    expect(uploaded.parseStatus).toBe("parsed");
+    expect(uploaded.textPreview).toContain("chunked upload knowledge marker");
+
+    const fileResponse = await request.get(uploaded.url);
+
+    expect(fileResponse.ok()).toBe(true);
+    expect((await fileResponse.body()).byteLength).toBe(content.byteLength);
+
+    await request.delete(uploaded.url);
+  });
+
+  test("deleting a chat also removes its uploaded files", async ({
+    request,
+  }) => {
+    const chatId = randomUUID();
+    const chatResponse = await request.post("/api/chat", {
+      data: JSON.stringify({
+        conversationId: chatId,
+        selectedChatModel: "deepseek-v4-flash",
+        selectedVisibilityType: "private",
+        message: {
+          role: "user",
+          parts: [{ type: "text", text: "create chat for file cleanup" }],
+        },
+        stream: false,
+      }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    expect(chatResponse.ok()).toBe(true);
+
+    const content = "file should be removed when its chat is deleted";
+    const uploadResponse = await request.post("/api/files/upload", {
+      multipart: {
+        chatId,
+        file: {
+          name: `chat-bound-${Date.now()}.txt`,
+          mimeType: "text/plain",
+          buffer: Buffer.from(content, "utf8"),
+        },
+      },
+    });
+
+    expect(uploadResponse.ok()).toBe(true);
+
+    const uploaded = await uploadResponse.json();
+    const fileResponse = await request.get(uploaded.url);
+
+    expect(fileResponse.ok()).toBe(true);
+
+    const deleteChatResponse = await request.delete(`/api/chat?id=${chatId}`);
+
+    expect(deleteChatResponse.ok()).toBe(true);
+    expect(await deleteChatResponse.json()).toMatchObject({
+      id: chatId,
+      deletedFiles: 1,
+      failedFileDeletes: 0,
     });
 
     const deletedFileResponse = await request.get(uploaded.url);

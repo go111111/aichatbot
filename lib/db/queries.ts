@@ -210,6 +210,7 @@ export async function deleteChatById(input: ChatIdInput) {
     memoryDb.messages = memoryDb.messages.filter((currentMessage) => currentMessage.chatId !== conversationId);
     memoryDb.streams = memoryDb.streams.filter((currentStream) => currentStream.chatId !== conversationId);
     memoryDb.fileChunks = memoryDb.fileChunks.filter((currentChunk) => currentChunk.chatId !== conversationId);
+    memoryDb.files = memoryDb.files.filter((currentFile) => currentFile.chatId !== conversationId);
     memoryDb.chats = memoryDb.chats.filter((currentChat) => currentChat.id !== conversationId);
     return selectedChat;
   }
@@ -219,6 +220,7 @@ export async function deleteChatById(input: ChatIdInput) {
     await db.delete(message).where(eq(message.chatId, conversationId));
     await db.delete(stream).where(eq(stream.chatId, conversationId));
     await db.delete(fileChunk).where(eq(fileChunk.chatId, conversationId));
+    await db.delete(file).where(eq(file.chatId, conversationId));
 
     const [chatsDeleted] = await db
       .delete(chat)
@@ -640,6 +642,33 @@ export async function getFilesByIdsForUser({
     );
   } catch (_error) {
     throw new ChatbotError("bad_request:database", "Failed to get files");
+  }
+}
+
+export async function getFilesByChatIdForUser({
+  chatId,
+  userId,
+}: {
+  chatId: string;
+  userId: string;
+}) {
+  if (useMemoryDb) {
+    return memoryDb.files.filter(
+      (currentFile) =>
+        currentFile.chatId === chatId && currentFile.userId === userId
+    );
+  }
+
+  try {
+    return await db
+      .select()
+      .from(file)
+      .where(and(eq(file.chatId, chatId), eq(file.userId, userId)));
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get files by chat id"
+    );
   }
 }
 

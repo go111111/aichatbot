@@ -27,6 +27,7 @@ import {
   deleteChatById,
   getChatById,
   getFileChunksByFileIdsForUser,
+  getFilesByChatIdForUser,
   getFilesByIdsForUser,
   getMessageById,
   getMessageCountByUserId,
@@ -39,6 +40,7 @@ import {
 import type { DBMessage, FileChunk, FileRecord } from "@/lib/db/schema";
 import { ChatbotError } from "@/lib/errors";
 import { checkIpRateLimit } from "@/lib/ratelimit";
+import { deleteStoredUploadFile } from "@/lib/files/storage";
 import {
   appendStreamChunk,
   markStreamCache,
@@ -839,7 +841,23 @@ export async function DELETE(request: Request) {
     return new ChatbotError("forbidden:chat").toResponse();
   }
 
+  const chatFiles = await getFilesByChatIdForUser({
+    chatId: conversationId,
+    userId: session.user.id,
+  });
   const deletedChat = await deleteChatById({ conversationId });
+  const diskDeleteResults = await Promise.all(
+    chatFiles.map((currentFile) => deleteStoredUploadFile(currentFile.storedName))
+  );
+  const deletedFiles = diskDeleteResults.filter(Boolean).length;
+  const deletedChatPayload = deletedChat ?? { id: conversationId };
 
-  return Response.json(deletedChat, { status: 200 });
+  return Response.json(
+    {
+      ...deletedChatPayload,
+      deletedFiles,
+      failedFileDeletes: chatFiles.length - deletedFiles,
+    },
+    { status: 200 }
+  );
 }

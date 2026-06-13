@@ -1,6 +1,5 @@
 import { createReadStream } from "node:fs";
-import { stat, unlink } from "node:fs/promises";
-import path from "node:path";
+import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
 
@@ -10,29 +9,15 @@ import {
   getChatById,
   getFilesByIdsForUser,
 } from "@/lib/db/queries";
-
-function getUploadDir() {
-  return (
-    process.env.UPLOAD_DIR ||
-    path.join(/*turbopackIgnore: true*/ process.cwd(), "uploads")
-  );
-}
+import {
+  deleteStoredUploadFile,
+  getStoredUploadPath,
+} from "@/lib/files/storage";
 
 function getContentDisposition(filename: string) {
   const encodedFilename = encodeURIComponent(filename);
   const fallbackFilename = filename.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
   return `inline; filename="${fallbackFilename}"; filename*=UTF-8''${encodedFilename}`;
-}
-
-function getStoredFilePath(storedName: string) {
-  const uploadDir = path.resolve(getUploadDir());
-  const filePath = path.resolve(uploadDir, storedName);
-
-  if (!filePath.startsWith(`${uploadDir}${path.sep}`)) {
-    return null;
-  }
-
-  return filePath;
 }
 
 async function getOwnedFile({
@@ -84,7 +69,7 @@ export async function GET(
   }
 
   const uploadedFile = result.uploadedFile;
-  const filePath = getStoredFilePath(uploadedFile.storedName);
+  const filePath = getStoredUploadPath(uploadedFile.storedName);
 
   if (!filePath) {
     return NextResponse.json({ error: "File not found" }, { status: 404 });
@@ -130,7 +115,6 @@ export async function DELETE(
   }
 
   const uploadedFile = result.uploadedFile;
-  const filePath = getStoredFilePath(uploadedFile.storedName);
   const deletedFile = await deleteFileByIdForUser({
     id: uploadedFile.id,
     userId: session.user.id,
@@ -140,26 +124,7 @@ export async function DELETE(
     return NextResponse.json({ error: "File not found" }, { status: 404 });
   }
 
-  let diskDeleted = false;
-
-  if (filePath) {
-    try {
-      await unlink(/* turbopackIgnore: true */ filePath);
-      diskDeleted = true;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-
-      if (code === "ENOENT") {
-        diskDeleted = true;
-      } else {
-        console.error("Failed to delete uploaded file from disk", {
-          fileId: uploadedFile.id,
-          storedName: uploadedFile.storedName,
-          code,
-        });
-      }
-    }
-  }
+  const diskDeleted = await deleteStoredUploadFile(uploadedFile.storedName);
 
   return NextResponse.json({
     id: deletedFile.id,
