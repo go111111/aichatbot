@@ -25,4 +25,4 @@ COPY --from=builder /app ./
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "pnpm db:migrate && pnpm start"]
+CMD ["sh", "-c", "pnpm db:migrate && pnpm exec next start -H 0.0.0.0"]

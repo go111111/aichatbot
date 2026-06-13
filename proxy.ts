@@ -2,6 +2,42 @@ import { type NextRequest, NextResponse } from "next/server";
 import { getToken } from "next-auth/jwt";
 import { guestRegex, shouldUseSecureAuthCookies } from "./lib/constants";
 
+const secureSessionCookieName = "__Secure-authjs.session-token";
+const sessionCookieName = "authjs.session-token";
+
+async function getSessionToken(request: NextRequest) {
+  const secret = process.env.AUTH_SECRET;
+
+  if (!secret) {
+    return null;
+  }
+
+  const preferredCookieName = shouldUseSecureAuthCookies()
+    ? secureSessionCookieName
+    : sessionCookieName;
+
+  const fallbackCookieName =
+    preferredCookieName === sessionCookieName
+      ? secureSessionCookieName
+      : sessionCookieName;
+
+  for (const cookieName of [preferredCookieName, fallbackCookieName]) {
+    const token = await getToken({
+      req: request,
+      secret,
+      cookieName,
+      salt: cookieName,
+      secureCookie: cookieName === secureSessionCookieName,
+    });
+
+    if (token) {
+      return token;
+    }
+  }
+
+  return null;
+}
+
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -17,11 +53,7 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const token = await getToken({
-    req: request,
-    secret: process.env.AUTH_SECRET,
-    secureCookie: shouldUseSecureAuthCookies(),
-  });
+  const token = await getSessionToken(request);
 
   const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
