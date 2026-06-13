@@ -38,6 +38,13 @@ async function getSessionToken(request: NextRequest) {
   return null;
 }
 
+function hasSessionCookie(request: NextRequest) {
+  return Boolean(
+    request.cookies.get(sessionCookieName)?.value ||
+      request.cookies.get(secureSessionCookieName)?.value
+  );
+}
+
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -57,7 +64,7 @@ export async function proxy(request: NextRequest) {
 
   const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
-  if (!token) {
+  if (!token && !hasSessionCookie(request)) {
     const redirectUrl = encodeURIComponent(new URL(request.url).pathname);
 
     return NextResponse.redirect(
