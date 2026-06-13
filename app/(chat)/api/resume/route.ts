@@ -1,6 +1,7 @@
 import { auth } from "@/app/(auth)/auth";
 import { getChatById, getMessagesByChatId } from "@/lib/db/queries";
 import { ChatbotError } from "@/lib/errors";
+import { getStreamSnapshot } from "@/lib/stream-cache";
 import { z } from "zod";
 
 /**
@@ -144,6 +145,7 @@ const reconnectSchema = z.object({
   id: z.string().uuid().optional(),
   conversationId: z.string().uuid().optional(),
   requestId: z.string().uuid(),
+  offset: z.coerce.number().int().min(0).default(0),
 }).refine((body) => body.conversationId || body.id, {
   message: "conversationId is required",
   path: ["conversationId"],
@@ -163,7 +165,7 @@ export async function POST(request: Request) {
       ).toResponse();
     }
 
-    const { conversationId, requestId } = parsed.data;
+    const { conversationId, requestId, offset } = parsed.data;
 
     const session = await auth();
     if (!session?.user?.id) {
@@ -202,6 +204,13 @@ export async function POST(request: Request) {
     // Determine if we can reconnect based on status
     const canReconnect =
       targetMessage.status === "pending" || targetMessage.status === "streaming";
+    const streamSnapshot = canReconnect
+      ? await getStreamSnapshot({
+          conversationId,
+          messageId: targetMessage.id,
+          offset,
+        })
+      : null;
 
     return Response.json(
       {
@@ -210,6 +219,7 @@ export async function POST(request: Request) {
         status: targetMessage.status,
         lastMessageId: targetMessage.id,
         canReconnect,
+        stream: streamSnapshot,
         partialContent: canReconnect ? targetMessage.parts : undefined,
       },
       { status: 200 }

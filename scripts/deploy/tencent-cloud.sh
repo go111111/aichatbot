@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/opt/ai-workbench}"
+APP_DIR="${APP_DIR:-/www/wwwroot/ai-workbench}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 ENV_FILE="${ENV_FILE:-.env.production}"
 
@@ -21,6 +21,7 @@ required_vars=(
   AI_PROVIDER
   DEFAULT_CHAT_MODEL
   TITLE_MODEL
+  REDIS_URL
   UPLOAD_DIR
 )
 

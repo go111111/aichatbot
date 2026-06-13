@@ -86,7 +86,6 @@ const TEXT_ATTACHMENT_ACCEPT =
   ".txt,.md,.csv,.json,text/plain,text/markdown,text/csv,application/json";
 const VISION_ATTACHMENT_ACCEPT =
   "image/jpeg,image/png,image/webp,image/gif,application/pdf";
-const MAX_TEXT_ATTACHMENT_CHARS = 3600;
 
 function getFileExtension(name: string) {
   const dotIndex = name.lastIndexOf(".");
@@ -98,11 +97,6 @@ function isTextAttachment(file: Pick<File, "name" | "type">) {
     TEXT_ATTACHMENT_TYPES.has(file.type) ||
     TEXT_ATTACHMENT_EXTENSIONS.has(getFileExtension(file.name))
   );
-}
-
-function buildTextAttachmentPart(attachment: Attachment) {
-  const header = `Attached text file: ${attachment.name}\n\n`;
-  return `${header}${attachment.text ?? ""}`.slice(0, 4000);
 }
 
 function PureMultimodalInput({
@@ -263,9 +257,7 @@ function PureMultimodalInput({
     capabilities?.[selectedModelId] ??
     chatModels.find((model) => model.id === selectedModelId)?.capabilities;
   const supportsVisionAttachments = selectedModelCapabilities?.vision === true;
-  const fileInputAccept = supportsVisionAttachments
-    ? `${TEXT_ATTACHMENT_ACCEPT},${VISION_ATTACHMENT_ACCEPT}`
-    : TEXT_ATTACHMENT_ACCEPT;
+  const fileInputAccept = `${TEXT_ATTACHMENT_ACCEPT},${VISION_ATTACHMENT_ACCEPT}`;
 
   const getOptimisticTitle = useCallback((text: string) => {
     const normalized = text.trim().replace(/\s+/g, " ");
@@ -278,16 +270,6 @@ function PureMultimodalInput({
   const submitForm = useCallback(() => {
     const isFirstMessage = messages.length === 0;
     const optimisticTitle = getOptimisticTitle(input);
-    const unsupportedFileAttachments = attachments.filter(
-      (attachment) =>
-        attachment.text === undefined && !supportsVisionAttachments
-    );
-
-    if (unsupportedFileAttachments.length > 0) {
-      toast.error("Selected model supports text attachments only.");
-      return;
-    }
-
     window.history.pushState(
       {},
       "",
@@ -333,22 +315,14 @@ function PureMultimodalInput({
       );
     }
 
-    const attachmentParts = attachments.map((attachment) => {
-      if (attachment.text !== undefined) {
-        return {
-          type: "text" as const,
-          text: buildTextAttachmentPart(attachment),
-        };
-      }
-
-      return {
+    const attachmentParts = attachments.map((attachment) => ({
         type: "file" as const,
+        fileId: attachment.id,
         url: attachment.url,
         name: attachment.name,
         mediaType: attachment.contentType,
         size: attachment.size,
-      };
-    });
+      }));
 
     sendMessage({
       role: "user",
@@ -378,19 +352,20 @@ function PureMultimodalInput({
     messages.length,
     mutate,
     selectedVisibilityType,
-    supportsVisionAttachments,
   ]);
 
   const uploadFile = useCallback(async (file: File) => {
     const isTextFile = isTextAttachment(file);
 
     if (!isTextFile && !supportsVisionAttachments) {
-      toast.error("Selected model supports text attachments only.");
-      return;
+      toast.info(
+        "This model can store and preview this file, but it will only read parsed text attachments."
+      );
     }
 
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("chatId", chatId);
 
     try {
       const response = await fetch(
@@ -403,17 +378,16 @@ function PureMultimodalInput({
 
       if (response.ok) {
         const data = await response.json();
-        const { url, pathname, contentType, size } = data;
-        const text = isTextFile
-          ? (await file.text()).slice(0, MAX_TEXT_ATTACHMENT_CHARS)
-          : undefined;
+        const { id, url, pathname, contentType, size, parseStatus, textPreview } = data;
 
         return {
+          id,
           url,
           name: pathname,
           contentType,
           size,
-          text,
+          parseStatus,
+          textPreview,
         };
       }
       const { error } = await response.json();
@@ -421,7 +395,29 @@ function PureMultimodalInput({
     } catch (_error) {
       toast.error("Failed to upload file, please try again!");
     }
-  }, [supportsVisionAttachments]);
+  }, [chatId, supportsVisionAttachments]);
+
+  const removeAttachment = useCallback(
+    (attachment: Attachment) => {
+      setAttachments((currentAttachments) =>
+        currentAttachments.filter((a) => a.url !== attachment.url)
+      );
+
+      if (attachment.id) {
+        fetch(
+          `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/files/${attachment.id}`,
+          { method: "DELETE" }
+        ).catch(() => {
+          toast.error("Failed to delete uploaded file");
+        });
+      }
+
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    },
+    [setAttachments]
+  );
 
   const handleFileChange = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -466,11 +462,6 @@ function PureMultimodalInput({
 
       event.preventDefault();
 
-      if (!supportsVisionAttachments) {
-        toast.error("Selected model supports text attachments only.");
-        return;
-      }
-
       setUploadQueue((prev) => [...prev, "Pasted image"]);
 
       try {
@@ -497,7 +488,7 @@ function PureMultimodalInput({
         setUploadQueue([]);
       }
     },
-    [setAttachments, supportsVisionAttachments, uploadFile]
+    [setAttachments, uploadFile]
   );
 
   useEffect(() => {
@@ -593,14 +584,7 @@ function PureMultimodalInput({
               <PreviewAttachment
                 attachment={attachment}
                 key={attachment.url}
-                onRemove={() => {
-                  setAttachments((currentAttachments) =>
-                    currentAttachments.filter((a) => a.url !== attachment.url)
-                  );
-                  if (fileInputRef.current) {
-                    fileInputRef.current.value = "";
-                  }
-                }}
+                onRemove={() => removeAttachment(attachment)}
               />
             ))}
 

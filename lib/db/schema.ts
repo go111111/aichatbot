@@ -2,6 +2,8 @@ import type { InferSelectModel } from "drizzle-orm";
 import {
   boolean,
   foreignKey,
+  index,
+  integer,
   json,
   pgTable,
   primaryKey,
@@ -77,6 +79,59 @@ export const vote = pgTable(
 );
 
 export type Vote = InferSelectModel<typeof vote>;
+
+export const file = pgTable("File", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  userId: uuid("userId")
+    .notNull()
+    .references(() => user.id),
+  chatId: uuid("chatId"),
+  originalName: text("originalName").notNull(),
+  storedName: text("storedName").notNull(),
+  url: text("url").notNull(),
+  mimeType: varchar("mimeType", { length: 128 }).notNull(),
+  size: integer("size").notNull(),
+  content: text("content"),
+  parseStatus: varchar("parseStatus", {
+    enum: ["parsed", "unsupported", "error"],
+  })
+    .notNull()
+    .default("unsupported"),
+  createdAt: timestamp("createdAt").notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt").notNull().defaultNow(),
+});
+
+export type FileRecord = InferSelectModel<typeof file>;
+
+export const fileChunk = pgTable(
+  "FileChunk",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    fileId: uuid("fileId")
+      .notNull()
+      .references(() => file.id),
+    userId: uuid("userId")
+      .notNull()
+      .references(() => user.id),
+    chatId: uuid("chatId").references(() => chat.id),
+    chunkIndex: integer("chunkIndex").notNull(),
+    content: text("content").notNull(),
+    charCount: integer("charCount").notNull(),
+    createdAt: timestamp("createdAt").notNull().defaultNow(),
+  },
+  (table) => ({
+    fileChunkIdx: index("idx_file_chunk_file_index").on(
+      table.fileId,
+      table.chunkIndex
+    ),
+    userChunkIdx: index("idx_file_chunk_user_file").on(
+      table.userId,
+      table.fileId
+    ),
+  })
+);
+
+export type FileChunk = InferSelectModel<typeof fileChunk>;
 
 export const document = pgTable(
   "Document",

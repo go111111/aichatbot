@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 import postgres from "postgres";
+import { checkRedisConnection, isRedisConfigured } from "@/lib/redis";
 
 type CheckStatus = "ok" | "degraded" | "error";
 
@@ -85,6 +86,23 @@ async function checkUploads(): Promise<HealthCheck> {
   }
 }
 
+async function checkRedis(): Promise<HealthCheck> {
+  if (!isRedisConfigured()) {
+    return {
+      status: process.env.NODE_ENV === "production" ? "error" : "degraded",
+      detail:
+        process.env.NODE_ENV === "production"
+          ? "REDIS_URL is required in production"
+          : "REDIS_URL is not configured; rate limiting and stream cache are disabled",
+    };
+  }
+
+  const ok = await checkRedisConnection();
+  return ok
+    ? { status: "ok" }
+    : { status: "error", detail: "redis unavailable" };
+}
+
 function getOverallStatus(checks: Record<string, HealthCheck>) {
   if (Object.values(checks).some((check) => check.status === "error")) {
     return "error";
@@ -102,6 +120,7 @@ export async function GET() {
     app: { status: "ok" as const },
     database: await checkDatabase(),
     provider: checkProvider(),
+    redis: await checkRedis(),
     uploads: await checkUploads(),
   };
   const status = getOverallStatus(checks);

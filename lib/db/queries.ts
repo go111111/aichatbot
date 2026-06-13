@@ -24,6 +24,10 @@ import {
   type DBMessage,
   type Document,
   document,
+  file,
+  fileChunk,
+  type FileChunk,
+  type FileRecord,
   message,
   type Suggestion,
   stream,
@@ -39,15 +43,36 @@ const client = postgres(process.env.POSTGRES_URL ?? "");
 const db = drizzle(client);
 const useMemoryDb = !process.env.POSTGRES_URL;
 
-const memoryDb = {
+type MemoryDb = {
+  users: User[];
+  chats: Chat[];
+  messages: DBMessage[];
+  votes: Vote[];
+  documents: Document[];
+  files: FileRecord[];
+  fileChunks: FileChunk[];
+  suggestions: Suggestion[];
+  streams: { id: string; chatId: string; createdAt: Date }[];
+};
+
+const createMemoryDb = (): MemoryDb => ({
   users: [] as User[],
   chats: [] as Chat[],
   messages: [] as DBMessage[],
   votes: [] as Vote[],
   documents: [] as Document[],
+  files: [] as FileRecord[],
+  fileChunks: [] as FileChunk[],
   suggestions: [] as Suggestion[],
   streams: [] as { id: string; chatId: string; createdAt: Date }[],
+});
+
+const globalForMemoryDb = globalThis as typeof globalThis & {
+  __aiWorkbenchMemoryDb?: MemoryDb;
 };
+
+const memoryDb =
+  globalForMemoryDb.__aiWorkbenchMemoryDb ?? (globalForMemoryDb.__aiWorkbenchMemoryDb = createMemoryDb());
 
 type ChatIdInput = {
   id?: string;
@@ -184,6 +209,7 @@ export async function deleteChatById(input: ChatIdInput) {
     memoryDb.votes = memoryDb.votes.filter((currentVote) => currentVote.chatId !== conversationId);
     memoryDb.messages = memoryDb.messages.filter((currentMessage) => currentMessage.chatId !== conversationId);
     memoryDb.streams = memoryDb.streams.filter((currentStream) => currentStream.chatId !== conversationId);
+    memoryDb.fileChunks = memoryDb.fileChunks.filter((currentChunk) => currentChunk.chatId !== conversationId);
     memoryDb.chats = memoryDb.chats.filter((currentChat) => currentChat.id !== conversationId);
     return selectedChat;
   }
@@ -192,6 +218,7 @@ export async function deleteChatById(input: ChatIdInput) {
     await db.delete(vote).where(eq(vote.chatId, conversationId));
     await db.delete(message).where(eq(message.chatId, conversationId));
     await db.delete(stream).where(eq(stream.chatId, conversationId));
+    await db.delete(fileChunk).where(eq(fileChunk.chatId, conversationId));
 
     const [chatsDeleted] = await db
       .delete(chat)
@@ -214,6 +241,9 @@ export async function deleteAllChatsByUserId({ userId }: { userId: string }) {
     memoryDb.votes = memoryDb.votes.filter((currentVote) => !chatIds.includes(currentVote.chatId));
     memoryDb.messages = memoryDb.messages.filter((currentMessage) => !chatIds.includes(currentMessage.chatId));
     memoryDb.streams = memoryDb.streams.filter((currentStream) => !chatIds.includes(currentStream.chatId));
+    memoryDb.fileChunks = memoryDb.fileChunks.filter(
+      (currentChunk) => !currentChunk.chatId || !chatIds.includes(currentChunk.chatId)
+    );
     memoryDb.chats = memoryDb.chats.filter((currentChat) => currentChat.userId !== userId);
     return { deletedCount: chatIds.length };
   }
@@ -233,6 +263,7 @@ export async function deleteAllChatsByUserId({ userId }: { userId: string }) {
     await db.delete(vote).where(inArray(vote.chatId, chatIds));
     await db.delete(message).where(inArray(message.chatId, chatIds));
     await db.delete(stream).where(inArray(stream.chatId, chatIds));
+    await db.delete(fileChunk).where(inArray(fileChunk.chatId, chatIds));
 
     const deletedChats = await db
       .delete(chat)
@@ -505,6 +536,256 @@ export async function getVotesByChatId(input: ChatIdInput) {
       "bad_request:database",
       "Failed to get votes by chat id"
     );
+  }
+}
+
+export async function saveUploadedFile({
+  id,
+  userId,
+  chatId,
+  originalName,
+  storedName,
+  url,
+  mimeType,
+  size,
+  content,
+  parseStatus,
+}: {
+  id?: string;
+  userId: string;
+  chatId?: string | null;
+  originalName: string;
+  storedName: string;
+  url: string;
+  mimeType: string;
+  size: number;
+  content?: string | null;
+  parseStatus: FileRecord["parseStatus"];
+}) {
+  const now = new Date();
+
+  if (useMemoryDb) {
+    const savedFile: FileRecord = {
+      id: id ?? generateUUID(),
+      userId,
+      chatId: chatId ?? null,
+      originalName,
+      storedName,
+      url,
+      mimeType,
+      size,
+      content: content ?? null,
+      parseStatus,
+      createdAt: now,
+      updatedAt: now,
+    };
+    memoryDb.files.push(savedFile);
+    return [savedFile];
+  }
+
+  try {
+    return await db
+      .insert(file)
+      .values({
+        userId,
+        ...(id ? { id } : {}),
+        chatId: chatId ?? null,
+        originalName,
+        storedName,
+        url,
+        mimeType,
+        size,
+        content: content ?? null,
+        parseStatus,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+  } catch (_error) {
+    throw new ChatbotError("bad_request:database", "Failed to save file");
+  }
+}
+
+export async function getFilesByIdsForUser({
+  ids,
+  userId,
+  chatId,
+}: {
+  ids: string[];
+  userId: string;
+  chatId?: string | null;
+}) {
+  if (ids.length === 0) {
+    return [];
+  }
+
+  if (useMemoryDb) {
+    return memoryDb.files.filter(
+      (currentFile) =>
+        ids.includes(currentFile.id) &&
+        currentFile.userId === userId &&
+        (!chatId || !currentFile.chatId || currentFile.chatId === chatId)
+    );
+  }
+
+  try {
+    const rows = await db
+      .select()
+      .from(file)
+      .where(and(inArray(file.id, ids), eq(file.userId, userId)));
+
+    return rows.filter(
+      (currentFile) =>
+        !chatId || !currentFile.chatId || currentFile.chatId === chatId
+    );
+  } catch (_error) {
+    throw new ChatbotError("bad_request:database", "Failed to get files");
+  }
+}
+
+export async function saveFileChunks({
+  chunks,
+}: {
+  chunks: Array<{
+    fileId: string;
+    userId: string;
+    chatId?: string | null;
+    chunkIndex: number;
+    content: string;
+    charCount: number;
+  }>;
+}) {
+  if (chunks.length === 0) {
+    return [];
+  }
+
+  const now = new Date();
+
+  if (useMemoryDb) {
+    const savedChunks: FileChunk[] = chunks.map((chunk) => ({
+      id: generateUUID(),
+      fileId: chunk.fileId,
+      userId: chunk.userId,
+      chatId: chunk.chatId ?? null,
+      chunkIndex: chunk.chunkIndex,
+      content: chunk.content,
+      charCount: chunk.charCount,
+      createdAt: now,
+    }));
+    memoryDb.fileChunks.push(...savedChunks);
+    return savedChunks;
+  }
+
+  try {
+    return await db
+      .insert(fileChunk)
+      .values(
+        chunks.map((chunk) => ({
+          fileId: chunk.fileId,
+          userId: chunk.userId,
+          chatId: chunk.chatId ?? null,
+          chunkIndex: chunk.chunkIndex,
+          content: chunk.content,
+          charCount: chunk.charCount,
+          createdAt: now,
+        }))
+      )
+      .returning();
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to save file chunks"
+    );
+  }
+}
+
+export async function getFileChunksByFileIdsForUser({
+  fileIds,
+  userId,
+  chatId,
+}: {
+  fileIds: string[];
+  userId: string;
+  chatId?: string | null;
+}) {
+  if (fileIds.length === 0) {
+    return [];
+  }
+
+  if (useMemoryDb) {
+    return memoryDb.fileChunks
+      .filter(
+        (currentChunk) =>
+          fileIds.includes(currentChunk.fileId) &&
+          currentChunk.userId === userId &&
+          (!chatId || !currentChunk.chatId || currentChunk.chatId === chatId)
+      )
+      .sort((a, b) =>
+        a.fileId === b.fileId
+          ? a.chunkIndex - b.chunkIndex
+          : a.fileId.localeCompare(b.fileId)
+      );
+  }
+
+  try {
+    const rows = await db
+      .select()
+      .from(fileChunk)
+      .where(and(inArray(fileChunk.fileId, fileIds), eq(fileChunk.userId, userId)))
+      .orderBy(asc(fileChunk.fileId), asc(fileChunk.chunkIndex));
+
+    return rows.filter(
+      (currentChunk) =>
+        !chatId || !currentChunk.chatId || currentChunk.chatId === chatId
+    );
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get file chunks"
+    );
+  }
+}
+
+export async function deleteFileByIdForUser({
+  id,
+  userId,
+}: {
+  id: string;
+  userId: string;
+}) {
+  if (useMemoryDb) {
+    const selectedFile =
+      memoryDb.files.find(
+        (currentFile) => currentFile.id === id && currentFile.userId === userId
+      ) ?? null;
+
+    if (!selectedFile) {
+      return null;
+    }
+
+    memoryDb.fileChunks = memoryDb.fileChunks.filter(
+      (currentChunk) => currentChunk.fileId !== id
+    );
+    memoryDb.files = memoryDb.files.filter(
+      (currentFile) => !(currentFile.id === id && currentFile.userId === userId)
+    );
+
+    return selectedFile;
+  }
+
+  try {
+    await db
+      .delete(fileChunk)
+      .where(and(eq(fileChunk.fileId, id), eq(fileChunk.userId, userId)));
+
+    const [deletedFile] = await db
+      .delete(file)
+      .where(and(eq(file.id, id), eq(file.userId, userId)))
+      .returning();
+
+    return deletedFile ?? null;
+  } catch (_error) {
+    throw new ChatbotError("bad_request:database", "Failed to delete file");
   }
 }
 

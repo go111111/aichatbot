@@ -26,6 +26,8 @@ import {
   createStreamId,
   deleteChatById,
   getChatById,
+  getFileChunksByFileIdsForUser,
+  getFilesByIdsForUser,
   getMessageById,
   getMessageCountByUserId,
   getMessagesByChatId,
@@ -34,9 +36,14 @@ import {
   updateChatTitleById,
   updateMessage,
 } from "@/lib/db/queries";
-import type { DBMessage } from "@/lib/db/schema";
+import type { DBMessage, FileChunk, FileRecord } from "@/lib/db/schema";
 import { ChatbotError } from "@/lib/errors";
 import { checkIpRateLimit } from "@/lib/ratelimit";
+import {
+  appendStreamChunk,
+  markStreamCache,
+  startStreamCache,
+} from "@/lib/stream-cache";
 import type { ChatMessage } from "@/lib/types";
 import { convertToUIMessages, generateUUID } from "@/lib/utils";
 import { generateTitleFromUserMessage } from "../../actions";
@@ -47,6 +54,10 @@ export const maxDuration = 60;
 const stoppedResponseText = "Generation stopped.";
 const failedResponseText =
   "I couldn't complete this response. It may be a network issue or the model provider is temporarily unavailable. Please try again or regenerate the response.";
+const KNOWLEDGE_TOP_K = 5;
+const FALLBACK_CHUNK_COUNT = 3;
+const LEGACY_CHUNK_CHAR_LENGTH = 1200;
+const LEGACY_CHUNK_OVERLAP_CHARS = 150;
 
 function getStreamContext() {
   try {
@@ -57,6 +68,233 @@ function getStreamContext() {
 }
 
 export { getStreamContext };
+
+function getReferencedFileIds(message?: ChatMessage) {
+  if (!message) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      message.parts
+        .filter((part) => part.type === "file")
+        .map((part) => (part as { fileId?: string }).fileId)
+        .filter((fileId): fileId is string => Boolean(fileId))
+    )
+  );
+}
+
+function getUserQuestionText(message?: ChatMessage) {
+  if (!message) {
+    return "";
+  }
+
+  return message.parts
+    .filter((part) => part.type === "text")
+    .map((part) => (part as { text: string }).text)
+    .join("\n");
+}
+
+function addKeyword(keywords: Map<string, number>, keyword: string) {
+  const normalizedKeyword = keyword.toLowerCase().trim();
+
+  if (normalizedKeyword.length < 2) {
+    return;
+  }
+
+  keywords.set(normalizedKeyword, (keywords.get(normalizedKeyword) ?? 0) + 1);
+}
+
+function extractKeywords(text: string) {
+  const keywords = new Map<string, number>();
+  const englishTokens = text.toLowerCase().match(/[a-z0-9][a-z0-9_-]{1,}/g) ?? [];
+  const cjkSegments = text.match(/[\u4e00-\u9fff]{2,}/g) ?? [];
+  const stopwords = new Set([
+    "the",
+    "and",
+    "for",
+    "with",
+    "this",
+    "that",
+    "what",
+    "how",
+    "why",
+    "请问",
+    "这个",
+    "文件",
+    "内容",
+    "一下",
+    "帮我",
+    "总结",
+    "如何",
+    "怎么",
+  ]);
+
+  for (const token of englishTokens) {
+    if (!stopwords.has(token)) {
+      addKeyword(keywords, token);
+    }
+  }
+
+  for (const segment of cjkSegments) {
+    if (!stopwords.has(segment)) {
+      addKeyword(keywords, segment);
+    }
+
+    for (let index = 0; index < segment.length - 1; index += 1) {
+      const bigram = segment.slice(index, index + 2);
+      if (!stopwords.has(bigram)) {
+        addKeyword(keywords, bigram);
+      }
+    }
+
+    for (let index = 0; index < segment.length - 2; index += 1) {
+      const trigram = segment.slice(index, index + 3);
+      if (!stopwords.has(trigram)) {
+        addKeyword(keywords, trigram);
+      }
+    }
+  }
+
+  return Array.from(keywords.entries())
+    .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
+    .slice(0, 16)
+    .map(([keyword]) => keyword);
+}
+
+function countOccurrences(content: string, keyword: string) {
+  let count = 0;
+  let fromIndex = 0;
+
+  while (fromIndex < content.length) {
+    const matchIndex = content.indexOf(keyword, fromIndex);
+
+    if (matchIndex === -1) {
+      break;
+    }
+
+    count += 1;
+    fromIndex = matchIndex + keyword.length;
+  }
+
+  return count;
+}
+
+function scoreChunk(content: string, keywords: string[]) {
+  const normalizedContent = content.toLowerCase();
+
+  return keywords.reduce((score, keyword) => {
+    const occurrences = countOccurrences(normalizedContent, keyword);
+    const weight = keyword.length >= 4 ? 2 : 1;
+    return score + occurrences * weight;
+  }, 0);
+}
+
+function createLegacyChunksFromFiles(files: FileRecord[]) {
+  const parsedFiles = files.filter(
+    (currentFile) => currentFile.parseStatus === "parsed" && currentFile.content
+  );
+
+  return parsedFiles.flatMap((currentFile) => {
+    const content = (currentFile.content ?? "").trim();
+    const chunks: FileChunk[] = [];
+    let start = 0;
+    let chunkIndex = 0;
+
+    while (start < content.length) {
+      const end = Math.min(start + LEGACY_CHUNK_CHAR_LENGTH, content.length);
+      const chunk = content.slice(start, end).trim();
+
+      if (chunk) {
+        chunks.push({
+          id: `${currentFile.id}-${chunkIndex}`,
+          fileId: currentFile.id,
+          userId: currentFile.userId,
+          chatId: currentFile.chatId,
+          chunkIndex,
+          content: chunk,
+          charCount: chunk.length,
+          createdAt: currentFile.createdAt,
+        });
+        chunkIndex += 1;
+      }
+
+      if (end >= content.length) {
+        break;
+      }
+
+      start = Math.max(0, end - LEGACY_CHUNK_OVERLAP_CHARS);
+    }
+
+    return chunks;
+  });
+}
+
+function buildRetrievedKnowledgeContext({
+  files,
+  chunks,
+  questionText,
+}: {
+  files: FileRecord[];
+  chunks: FileChunk[];
+  questionText: string;
+}) {
+  const fileNameById = new Map(files.map((currentFile) => [currentFile.id, currentFile.originalName]));
+  const chunkedFileIds = new Set(chunks.map((chunk) => chunk.fileId));
+  const legacyChunks = createLegacyChunksFromFiles(
+    files.filter((currentFile) => !chunkedFileIds.has(currentFile.id))
+  );
+  const availableChunks = [...chunks, ...legacyChunks];
+
+  if (availableChunks.length === 0) {
+    return "";
+  }
+
+  const keywords = extractKeywords(questionText);
+  const rankedChunks = availableChunks
+    .map((chunk) => ({
+      chunk,
+      score: keywords.length > 0 ? scoreChunk(chunk.content, keywords) : 0,
+    }))
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        a.chunk.fileId.localeCompare(b.chunk.fileId) ||
+        a.chunk.chunkIndex - b.chunk.chunkIndex
+    );
+
+  const hasKeywordHit = rankedChunks.some((rankedChunk) => rankedChunk.score > 0);
+  const selectedChunks = hasKeywordHit
+    ? rankedChunks.slice(0, KNOWLEDGE_TOP_K)
+    : availableChunks.slice(0, FALLBACK_CHUNK_COUNT).map((chunk) => ({
+        chunk,
+        score: 0,
+      }));
+
+  return selectedChunks
+    .map(({ chunk, score }) => {
+      const fileName = fileNameById.get(chunk.fileId) ?? "uploaded file";
+      return `### ${fileName} | chunk ${chunk.chunkIndex + 1} | score ${score}\n${chunk.content}`;
+    })
+    .join("\n\n");
+}
+
+function prepareMessagesForModel({
+  messages,
+  supportsVision,
+}: {
+  messages: ChatMessage[];
+  supportsVision: boolean;
+}) {
+  if (supportsVision) {
+    return messages;
+  }
+
+  return messages.map((message) => ({
+    ...message,
+    parts: message.parts.filter((part) => part.type !== "file"),
+  })) as ChatMessage[];
+}
 
 /**
  * POST /api/chat - Handle AI conversation with streaming
@@ -253,6 +491,11 @@ export async function POST(request: Request) {
     // Generate assistant message ID and request ID
     const assistantMessageId = generateUUID();
     const streamRequestId = providedRequestId ?? generateUUID();
+    const streamCacheInput = {
+      conversationId,
+      messageId: assistantMessageId,
+      requestId: streamRequestId,
+    };
 
     if (!isToolApprovalFlow) {
       await saveMessages({
@@ -270,6 +513,7 @@ export async function POST(request: Request) {
           },
         ],
       });
+      await startStreamCache(streamCacheInput);
     }
 
     // Get model capabilities
@@ -277,9 +521,50 @@ export async function POST(request: Request) {
     const capabilities = modelCapabilities[chatModel];
     const isReasoningModel = capabilities?.reasoning === true;
     const supportsTools = capabilities?.tools === true;
+    const supportsVision = capabilities?.vision === true;
+    const referencedFileIds = getReferencedFileIds(userMessage);
+    const referencedFiles =
+      referencedFileIds.length > 0
+        ? await getFilesByIdsForUser({
+            ids: referencedFileIds,
+            userId: session.user.id,
+            chatId: conversationId,
+          })
+        : [];
+
+    if (referencedFiles.length !== referencedFileIds.length) {
+      return new ChatbotError(
+        "forbidden:upload",
+        "One or more uploaded files do not belong to this conversation."
+      ).toResponse();
+    }
+
+    const referencedChunks =
+      referencedFileIds.length > 0
+        ? await getFileChunksByFileIdsForUser({
+            fileIds: referencedFileIds,
+            userId: session.user.id,
+            chatId: conversationId,
+          })
+        : [];
+    const knowledgeContext = buildRetrievedKnowledgeContext({
+      files: referencedFiles,
+      chunks: referencedChunks,
+      questionText: getUserQuestionText(userMessage),
+    });
+    const modelUiMessages = prepareMessagesForModel({
+      messages: uiMessages,
+      supportsVision,
+    });
+    const baseSystemPrompt = systemPrompt({ requestHints, supportsTools });
+    // Durable file metadata and chunks live in PostgreSQL; Redis remains for short-lived stream state and rate limits.
+    // This lexical scorer is the swappable point for a later pgvector/embedding retriever.
+    const systemPromptWithKnowledge = knowledgeContext
+      ? `${baseSystemPrompt}\n\nUse the following retrieved knowledge chunks when they are relevant. If the chunks are not relevant, answer normally.\n\n<retrieved_knowledge>\n${knowledgeContext}\n</retrieved_knowledge>`
+      : baseSystemPrompt;
 
     // Convert to model messages
-    const modelMessages = await convertToModelMessages(uiMessages);
+    const modelMessages = await convertToModelMessages(modelUiMessages);
     let partialAssistantText = "";
     let partialAssistantReasoning = "";
     let hasMarkedStreaming = false;
@@ -291,7 +576,7 @@ export async function POST(request: Request) {
         const result = streamText({
           model: getLanguageModel(chatModel),
           abortSignal: request.signal,
-          system: systemPrompt({ requestHints, supportsTools }),
+          system: systemPromptWithKnowledge,
           messages: modelMessages,
           stopWhen: stepCountIs(5),
           experimental_activeTools: supportsTools
@@ -336,9 +621,23 @@ export async function POST(request: Request) {
             }
             if (chunk.type === "text-delta") {
               partialAssistantText += chunk.text;
+              if (!isToolApprovalFlow) {
+                await appendStreamChunk({
+                  ...streamCacheInput,
+                  type: "text",
+                  content: chunk.text,
+                });
+              }
             }
             if (chunk.type === "reasoning-delta") {
               partialAssistantReasoning += chunk.text;
+              if (!isToolApprovalFlow) {
+                await appendStreamChunk({
+                  ...streamCacheInput,
+                  type: "reasoning",
+                  content: chunk.text,
+                });
+              }
             }
           },
           onAbort: async () => {
@@ -351,6 +650,10 @@ export async function POST(request: Request) {
                 await updateMessage({
                   id: assistantMessageId,
                   parts: [{ type: "text", text: stoppedResponseText }],
+                  status: "aborted",
+                });
+                await markStreamCache({
+                  ...streamCacheInput,
                   status: "aborted",
                 });
               }
@@ -369,6 +672,10 @@ export async function POST(request: Request) {
                     text: `${text}${text ? "\n\n" : ""}_Generation stopped._`,
                   },
                 ],
+                status: "aborted",
+              });
+              await markStreamCache({
+                ...streamCacheInput,
                 status: "aborted",
               });
             }
@@ -433,6 +740,10 @@ export async function POST(request: Request) {
               parts: assistantMsg.parts,
               status: "done",
             });
+            await markStreamCache({
+              ...streamCacheInput,
+              status: "done",
+            });
           } else {
             const text = partialAssistantText.trim();
             const reasoning = partialAssistantReasoning.trim();
@@ -446,6 +757,10 @@ export async function POST(request: Request) {
               ],
               status: "done",
             });
+            await markStreamCache({
+              ...streamCacheInput,
+              status: "done",
+            });
           }
         }
       },
@@ -457,7 +772,13 @@ export async function POST(request: Request) {
             parts: [{ type: "text", text: failedResponseText }],
             status: "error",
           }).catch((updateError) => {
-            console.error("Failed to mark assistant message as error:", updateError);
+              console.error("Failed to mark assistant message as error:", updateError);
+            });
+          markStreamCache({
+            ...streamCacheInput,
+            status: "error",
+          }).catch((cacheError) => {
+            console.error("Failed to mark Redis stream as error:", cacheError);
           });
         }
         return "Oops, an error occurred!";

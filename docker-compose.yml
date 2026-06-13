@@ -9,8 +9,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3001:3000"
     volumes:
       - ./data/uploads:/app/uploads
     healthcheck:
@@ -37,4 +39,17 @@ services:
       retries: 5
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai-workbench-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ./data/redis:/data
     restart: unless-stopped

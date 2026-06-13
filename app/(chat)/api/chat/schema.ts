@@ -4,8 +4,11 @@ const uploadUrlSchema = z.string().refine((value) => {
   if (value.startsWith("/uploads/")) {
     return true;
   }
+  if (/^\/api\/files\/[0-9a-f-]{36}$/i.test(value)) {
+    return true;
+  }
   return z.string().url().safeParse(value).success;
-}, "File URL must be an absolute URL or an application upload URL");
+}, "File URL must be an absolute URL or an application file URL");
 
 const textPartSchema = z.object({
   type: z.literal("text"),
@@ -14,6 +17,7 @@ const textPartSchema = z.object({
 
 const filePartSchema = z.object({
   type: z.literal("file"),
+  fileId: z.string().uuid().optional(),
   mediaType: z.enum([
     "image/jpeg",
     "image/png",

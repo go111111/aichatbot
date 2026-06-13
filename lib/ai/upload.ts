@@ -26,10 +26,13 @@ export async function uploadFile(file: File): Promise<Attachment> {
 
     const data = await response.json();
     return {
+      id: data.id,
       name: data.pathname,
       url: data.url,
       contentType: data.contentType,
       size: data.size,
+      parseStatus: data.parseStatus,
+      textPreview: data.textPreview,
     };
   } catch (error) {
     if (error instanceof ChatbotError) {
@@ -43,13 +46,22 @@ export async function uploadFile(file: File): Promise<Attachment> {
 }
 
 /**
- * Delete an uploaded file
- * @param fileName - The name of the file to delete
+ * Delete an uploaded file by file id or protected file URL.
+ * Legacy `/api/upload?name=...` deletion is intentionally not used for the
+ * protected file flow because deletion must pass through ownership checks.
  */
-export async function deleteUploadedFile(fileName: string): Promise<void> {
+export async function deleteUploadedFile(fileIdOrUrl: string): Promise<void> {
+  const fileId = fileIdOrUrl.startsWith("/api/files/")
+    ? fileIdOrUrl.split("/").at(-1)
+    : fileIdOrUrl;
+
+  if (!fileId) {
+    throw new ChatbotError("bad_request:upload", "File id is required");
+  }
+
   try {
     const response = await fetch(
-      `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/upload?name=${encodeURIComponent(fileName)}`,
+      `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/files/${encodeURIComponent(fileId)}`,
       {
         method: "DELETE",
       }

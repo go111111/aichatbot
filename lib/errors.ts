@@ -120,7 +120,7 @@ export function getMessageByErrorCode(errorCode: ErrorCode): string {
     case "bad_request:upload":
       return "The file couldn't be uploaded. Please check the file type and size.";
     case "forbidden:upload":
-      return "You don't have permission to upload this file.";
+      return "You don't have permission to access this uploaded file.";
     case "internal_error:upload":
       return "An error occurred while uploading the file. Please try again later.";
 

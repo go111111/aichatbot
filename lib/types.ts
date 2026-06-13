@@ -56,9 +56,11 @@ export type ChatMessage = UIMessage<
 >;
 
 export type Attachment = {
+  id?: string;
   name: string;
   url: string;
   contentType: string;
   size?: number;
-  text?: string;
+  parseStatus?: "parsed" | "unsupported" | "error";
+  textPreview?: string | null;
 };

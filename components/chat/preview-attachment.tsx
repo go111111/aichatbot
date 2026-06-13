@@ -12,7 +12,21 @@ export const PreviewAttachment = ({
   isUploading?: boolean;
   onRemove?: () => void;
 }) => {
-  const { name, url, contentType } = attachment;
+  const { name, url, contentType, parseStatus } = attachment;
+  const isTextLike =
+    contentType === "text/plain" ||
+    contentType === "text/markdown" ||
+    contentType === "text/csv" ||
+    contentType === "application/json";
+  const label = contentType === "application/pdf" ? "PDF" : isTextLike ? "Text" : "File";
+  const statusLabel =
+    parseStatus === "parsed"
+      ? "Parsed"
+      : parseStatus === "error"
+        ? "Parse error"
+        : parseStatus === "unsupported"
+          ? "Preview only"
+          : null;
 
   return (
     <div
@@ -25,11 +39,18 @@ export const PreviewAttachment = ({
           className="size-full object-cover"
           height={96}
           src={url}
+          unoptimized={url.startsWith("/api/files/")}
           width={96}
         />
       ) : (
-        <div className="flex size-full items-center justify-center text-muted-foreground text-xs">
-          File
+        <div className="flex size-full flex-col items-center justify-center gap-1 px-2 text-center text-muted-foreground text-xs">
+          <span className="font-medium text-foreground/70">{label}</span>
+          {statusLabel && (
+            <span className="max-w-full truncate text-[10px]">
+              {statusLabel}
+            </span>
+          )}
+          <span className="max-w-full truncate text-[10px]">{name}</span>
         </div>
       )}
 
