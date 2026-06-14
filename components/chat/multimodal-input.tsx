@@ -118,6 +118,14 @@ function canServerParseAttachment(file: Pick<File, "name" | "type">) {
   );
 }
 
+function createAbortError() {
+  return new DOMException("Upload canceled", "AbortError");
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 function PureMultimodalInput({
   chatId,
   input,
@@ -261,6 +269,8 @@ function PureMultimodalInput({
   };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const canceledUploadIdsRef = useRef<Set<string>>(new Set());
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
@@ -383,7 +393,7 @@ function PureMultimodalInput({
   );
 
   const uploadChunkedFile = useCallback(
-    async (file: File, queueId: string) => {
+    async (file: File, queueId: string, signal: AbortSignal) => {
       const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
       let uploadId: string | undefined;
       const cancelChunkedUpload = async () => {
@@ -400,11 +410,16 @@ function PureMultimodalInput({
         });
       };
 
+      if (signal.aborted) {
+        throw createAbortError();
+      }
+
       const initiateResponse = await fetch(
         `${basePath}/api/files/chunked/initiate`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          signal,
           body: JSON.stringify({
             filename: file.name,
             contentType: file.type,
@@ -426,6 +441,10 @@ function PureMultimodalInput({
 
       try {
         for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+          if (signal.aborted) {
+            throw createAbortError();
+          }
+
           const start = chunkIndex * chunkSize;
           const end = Math.min(start + chunkSize, file.size);
           const formData = new FormData();
@@ -435,6 +454,7 @@ function PureMultimodalInput({
 
           const chunkResponse = await fetch(`${basePath}/api/files/chunked/chunk`, {
             method: "POST",
+            signal,
             body: formData,
           });
 
@@ -459,6 +479,7 @@ function PureMultimodalInput({
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
+            signal,
             body: JSON.stringify({ uploadId: activeUploadId }),
           }
         );
@@ -477,86 +498,140 @@ function PureMultimodalInput({
     [chatId, updateUploadQueueItem]
   );
 
-  const uploadFile = useCallback(async (file: File, queueId: string) => {
-    const canParseOnServer = canServerParseAttachment(file);
+  const uploadFile = useCallback(
+    async (file: File, queueId: string) => {
+      const controller = new AbortController();
+      uploadControllersRef.current.set(queueId, controller);
+      canceledUploadIdsRef.current.delete(queueId);
 
-    if (file.size > CHUNKED_UPLOAD_MAX_BYTES) {
-      throw new Error("File size should be less than 100MB");
-    }
+      try {
+        const canParseOnServer = canServerParseAttachment(file);
 
-    if (!canParseOnServer && !supportsVisionAttachments) {
-      toast.info(
-        "This file can be stored and previewed, but this model cannot read it directly."
-      );
-    } else if (
-      OCR_ATTACHMENT_TYPES.has(file.type) &&
-      !supportsVisionAttachments
-    ) {
-      toast.info(
-        "This model cannot see images directly. The server will try OCR and use recognized text when available."
-      );
-    }
-
-    if (file.size > STANDARD_UPLOAD_MAX_BYTES) {
-      return uploadChunkedFile(file, queueId);
-    }
-
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("chatId", chatId);
-
-    let processingTimer: ReturnType<typeof setTimeout> | undefined;
-
-    try {
-      updateUploadQueueItem(queueId, {
-        progress: 35,
-        status: "uploading",
-      });
-      const requestPromise = fetch(
-        `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/files/upload`,
-        {
-          method: "POST",
-          body: formData,
+        if (file.size > CHUNKED_UPLOAD_MAX_BYTES) {
+          throw new Error("File size should be less than 100MB");
         }
-      );
-      processingTimer = setTimeout(() => {
-        updateUploadQueueItem(queueId, {
-          progress: 75,
-          status: "processing",
-        });
-      }, 800);
-      const response = await requestPromise;
 
-      if (response.ok) {
-        updateUploadQueueItem(queueId, {
-          progress: 90,
-          status: "processing",
-        });
-        const data = await response.json();
-        const { id, url, pathname, contentType, size, parseStatus, textPreview } = data;
+        if (!canParseOnServer && !supportsVisionAttachments) {
+          toast.info(
+            "This file can be stored and previewed, but this model cannot read it directly."
+          );
+        } else if (
+          OCR_ATTACHMENT_TYPES.has(file.type) &&
+          !supportsVisionAttachments
+        ) {
+          toast.info(
+            "This model cannot see images directly. The server will try OCR and use recognized text when available."
+          );
+        }
 
-        return {
-          id,
-          url,
-          name: pathname,
-          contentType,
-          size,
-          parseStatus,
-          textPreview,
-        };
+        if (file.size > STANDARD_UPLOAD_MAX_BYTES) {
+          return uploadChunkedFile(file, queueId, controller.signal);
+        }
+
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("chatId", chatId);
+
+        let processingTimer: ReturnType<typeof setTimeout> | undefined;
+
+        try {
+          updateUploadQueueItem(queueId, {
+            progress: 35,
+            status: "uploading",
+          });
+          const requestPromise = fetch(
+            `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/files/upload`,
+            {
+              method: "POST",
+              body: formData,
+              signal: controller.signal,
+            }
+          );
+          processingTimer = setTimeout(() => {
+            updateUploadQueueItem(queueId, {
+              progress: 75,
+              status: "processing",
+            });
+          }, 800);
+          const response = await requestPromise;
+
+          if (response.ok) {
+            updateUploadQueueItem(queueId, {
+              progress: 90,
+              status: "processing",
+            });
+            const data = await response.json();
+            const {
+              id,
+              url,
+              pathname,
+              contentType,
+              size,
+              parseStatus,
+              textPreview,
+            } = data;
+
+            return {
+              id,
+              url,
+              name: pathname,
+              contentType,
+              size,
+              parseStatus,
+              textPreview,
+            };
+          }
+          const { error } = await response.json();
+          throw new Error(error ?? "Failed to upload file");
+        } catch (error) {
+          if (isAbortError(error) || controller.signal.aborted) {
+            throw createAbortError();
+          }
+
+          throw error instanceof Error
+            ? error
+            : new Error("Failed to upload file, please try again!");
+        } finally {
+          if (processingTimer) {
+            clearTimeout(processingTimer);
+          }
+        }
+      } finally {
+        uploadControllersRef.current.delete(queueId);
       }
-      const { error } = await response.json();
-      throw new Error(error ?? "Failed to upload file");
-    } catch (error) {
-      throw error instanceof Error
-        ? error
-        : new Error("Failed to upload file, please try again!");
-    } finally {
-      if (processingTimer) {
-        clearTimeout(processingTimer);
-      }
+    },
+    [
+      chatId,
+      supportsVisionAttachments,
+      updateUploadQueueItem,
+      uploadChunkedFile,
+    ]
+  );
+
+  const cancelUploadQueueItem = useCallback((queueId: string) => {
+    canceledUploadIdsRef.current.add(queueId);
+    uploadControllersRef.current.get(queueId)?.abort();
+    uploadControllersRef.current.delete(queueId);
+    setUploadQueue((items) =>
+      items.filter((currentItem) => currentItem.id !== queueId)
+    );
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
     }
-  }, [chatId, supportsVisionAttachments, updateUploadQueueItem, uploadChunkedFile]);
+  }, []);
+
+  const deleteUploadedAttachment = useCallback((attachment: Attachment) => {
+    if (!attachment.id) {
+      return;
+    }
+
+    fetch(`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/files/${attachment.id}`, {
+      method: "DELETE",
+    }).catch(() => {
+      // Cancel is best-effort; the visible attachment has already been removed.
+    });
+  }, []);
 
   const removeAttachment = useCallback(
     (attachment: Attachment) => {
@@ -599,12 +674,22 @@ function PureMultimodalInput({
 
             try {
               const attachment = await uploadFile(file, queueItem.id);
+              if (canceledUploadIdsRef.current.has(queueItem.id)) {
+                deleteUploadedAttachment(attachment);
+                return undefined;
+              }
               updateUploadQueueItem(queueItem.id, {
                 progress: 100,
                 status: "processing",
               });
               return attachment;
             } catch (error) {
+              if (
+                isAbortError(error) ||
+                canceledUploadIdsRef.current.has(queueItem.id)
+              ) {
+                return undefined;
+              }
               updateUploadQueueItem(queueItem.id, {
                 status: "error",
                 error:
@@ -628,11 +713,15 @@ function PureMultimodalInput({
         toast.error("Failed to upload files");
       } finally {
         setUploadQueue((items) =>
-          items.filter((item) => item.status === "error")
+          items.filter(
+            (item) =>
+              item.status === "error" &&
+              !canceledUploadIdsRef.current.has(item.id)
+          )
         );
       }
     },
-    [setAttachments, updateUploadQueueItem, uploadFile]
+    [setAttachments, updateUploadQueueItem, uploadFile, deleteUploadedAttachment]
   );
 
   const handlePaste = useCallback(
@@ -672,8 +761,20 @@ function PureMultimodalInput({
         const uploadedAttachments = await Promise.all(
           queueItems.map(async (item) => {
             try {
-              return await uploadFile(item.file, item.id);
+              const attachment = await uploadFile(item.file, item.id);
+              if (canceledUploadIdsRef.current.has(item.id)) {
+                deleteUploadedAttachment(attachment);
+                return undefined;
+              }
+
+              return attachment;
             } catch (error) {
+              if (
+                isAbortError(error) ||
+                canceledUploadIdsRef.current.has(item.id)
+              ) {
+                return undefined;
+              }
               updateUploadQueueItem(item.id, {
                 status: "error",
                 error:
@@ -700,11 +801,15 @@ function PureMultimodalInput({
         toast.error("Failed to upload pasted image(s)");
       } finally {
         setUploadQueue((items) =>
-          items.filter((item) => item.status === "error")
+          items.filter(
+            (item) =>
+              item.status === "error" &&
+              !canceledUploadIdsRef.current.has(item.id)
+          )
         );
       }
     },
-    [setAttachments, updateUploadQueueItem, uploadFile]
+    [setAttachments, updateUploadQueueItem, uploadFile, deleteUploadedAttachment]
   );
 
   useEffect(() => {
@@ -817,14 +922,7 @@ function PureMultimodalInput({
                 error={item.error}
                 isUploading={item.status !== "error"}
                 key={item.id}
-                onRemove={
-                  item.status === "error"
-                    ? () =>
-                        setUploadQueue((items) =>
-                          items.filter((currentItem) => currentItem.id !== item.id)
-                        )
-                    : undefined
-                }
+                onRemove={() => cancelUploadQueueItem(item.id)}
                 progress={item.progress}
                 uploadStatus={item.status}
               />

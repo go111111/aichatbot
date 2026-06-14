@@ -100,20 +100,27 @@ export const PreviewAttachment = ({
         </div>
       )}
 
-      {onRemove &&
-        !isUploading &&
-        uploadStatus !== "processing" &&
-        uploadStatus !== "uploading" && (
+      {onRemove && (
         <button
-          className={`absolute top-1.5 right-1.5 flex size-5 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur-sm transition-opacity hover:bg-black/80 ${
-            uploadStatus === "error" ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+          aria-label={
+            isUploading || uploadStatus === "processing" || uploadStatus === "uploading"
+              ? "Cancel upload"
+              : "Remove attachment"
+          }
+          className={`absolute top-1.5 right-1.5 z-10 flex size-5 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur-sm transition-opacity hover:bg-black/80 ${
+            uploadStatus || isUploading ? "opacity-100" : "opacity-0 group-hover:opacity-100"
           }`}
           onClick={onRemove}
+          title={
+            isUploading || uploadStatus === "processing" || uploadStatus === "uploading"
+              ? "Cancel upload"
+              : "Remove attachment"
+          }
           type="button"
         >
           <CrossSmallIcon size={10} />
         </button>
-        )}
+      )}
     </div>
   );
 };
