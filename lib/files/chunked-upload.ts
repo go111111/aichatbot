@@ -1,5 +1,5 @@
-import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream, type Dirent } from "node:fs";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 
@@ -21,6 +21,7 @@ export type ChunkedUploadManifest = {
   size: number;
   totalChunks: number;
   receivedChunks: number[];
+  fingerprint?: string;
   createdAt: string;
 };
 
@@ -93,6 +94,55 @@ export async function readManifest({
   }
 }
 
+export async function findReusableManifest({
+  userId,
+  chatId,
+  contentType,
+  size,
+  fingerprint,
+}: {
+  userId: string;
+  chatId: string | null;
+  contentType: string;
+  size: number;
+  fingerprint?: string;
+}) {
+  if (!fingerprint) {
+    return null;
+  }
+
+  const userUploadDir = path.join(getChunkedRootDir(), getSafeFilename(userId));
+  let uploadDirs: Dirent[];
+
+  try {
+    uploadDirs = await readdir(userUploadDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  for (const uploadDir of uploadDirs) {
+    if (!uploadDir.isDirectory()) {
+      continue;
+    }
+
+    const manifest = await readManifest({
+      userId,
+      uploadId: uploadDir.name,
+    });
+
+    if (
+      manifest?.fingerprint === fingerprint &&
+      manifest.chatId === chatId &&
+      manifest.contentType === contentType &&
+      manifest.size === size
+    ) {
+      return manifest;
+    }
+  }
+
+  return null;
+}
+
 export async function deleteChunkedUpload({
   userId,
   uploadId,
@@ -120,9 +170,16 @@ export async function saveChunk({
   }
 
   const isLastChunk = chunkIndex === manifest.totalChunks - 1;
+  const expectedChunkSize = isLastChunk
+    ? manifest.size - CHUNKED_UPLOAD_CHUNK_BYTES * (manifest.totalChunks - 1)
+    : CHUNKED_UPLOAD_CHUNK_BYTES;
 
   if (!isLastChunk && buffer.byteLength > CHUNKED_UPLOAD_CHUNK_BYTES) {
     throw new Error("Chunk is too large");
+  }
+
+  if (buffer.byteLength !== expectedChunkSize) {
+    throw new Error("Chunk size does not match upload manifest");
   }
 
   await writeFile(
@@ -167,6 +224,12 @@ export async function completeChunkedUpload(manifest: ChunkedUploadManifest) {
           flags: chunkIndex === 0 ? "w" : "a",
         })
       );
+    }
+
+    const targetStats = await stat(targetPath);
+
+    if (targetStats.size !== manifest.size) {
+      throw new Error("Merged file size does not match upload manifest");
     }
 
     const savedFile = await persistUploadedFile({

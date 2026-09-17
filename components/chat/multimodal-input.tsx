@@ -89,6 +89,10 @@ const VISION_ATTACHMENT_ACCEPT =
 const OCR_ATTACHMENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const STANDARD_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
 const CHUNKED_UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
+const CHUNK_UPLOAD_CONCURRENCY = 3;
+const CHUNK_UPLOAD_RETRY_LIMIT = 2;
+const FINGERPRINT_SAMPLE_BYTES = 1024 * 1024;
+const RETRY_BASE_DELAY_MS = 500;
 
 type UploadQueueItem = {
   id: string;
@@ -124,6 +128,66 @@ function createAbortError() {
 
 function isAbortError(error: unknown) {
   return error instanceof DOMException && error.name === "AbortError";
+}
+
+function arrayBufferToHex(buffer: ArrayBuffer) {
+  return Array.from(new Uint8Array(buffer))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function createFileFingerprint(file: File) {
+  const metadata = `${file.name}:${file.type}:${file.size}:${file.lastModified}`;
+
+  if (!globalThis.crypto?.subtle) {
+    return metadata;
+  }
+
+  const firstSample = await file
+    .slice(0, Math.min(file.size, FINGERPRINT_SAMPLE_BYTES))
+    .arrayBuffer();
+  const lastSample =
+    file.size > FINGERPRINT_SAMPLE_BYTES
+      ? await file
+          .slice(Math.max(0, file.size - FINGERPRINT_SAMPLE_BYTES), file.size)
+          .arrayBuffer()
+      : new ArrayBuffer(0);
+  const combinedSample = new Uint8Array(
+    firstSample.byteLength + lastSample.byteLength
+  );
+  combinedSample.set(new Uint8Array(firstSample), 0);
+  combinedSample.set(new Uint8Array(lastSample), firstSample.byteLength);
+  const digest = await crypto.subtle.digest("SHA-256", combinedSample);
+
+  return `${metadata}:${arrayBufferToHex(digest)}`;
+}
+
+function waitBeforeRetry(delayMs: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(createAbortError());
+      return;
+    }
+
+    const timeout = setTimeout(resolve, delayMs);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timeout);
+        reject(createAbortError());
+      },
+      { once: true }
+    );
+  });
+}
+
+async function getResponseError(response: Response, fallback: string) {
+  try {
+    const { error } = await response.json();
+    return error ?? fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function PureMultimodalInput({
@@ -414,6 +478,7 @@ function PureMultimodalInput({
         throw createAbortError();
       }
 
+      const fingerprint = await createFileFingerprint(file);
       const initiateResponse = await fetch(
         `${basePath}/api/files/chunked/initiate`,
         {
@@ -425,22 +490,43 @@ function PureMultimodalInput({
             contentType: file.type,
             size: file.size,
             chatId,
+            fingerprint,
           }),
         }
       );
 
       if (!initiateResponse.ok) {
-        const { error } = await initiateResponse.json();
-        throw new Error(error ?? "Failed to start upload");
+        throw new Error(
+          await getResponseError(initiateResponse, "Failed to start upload")
+        );
       }
 
       const uploadSession = await initiateResponse.json();
       uploadId = uploadSession.uploadId;
       const activeUploadId = String(uploadId);
-      const { chunkSize, totalChunks } = uploadSession;
+      const {
+        chunkSize,
+        totalChunks,
+        uploadedChunks = [],
+      }: {
+        chunkSize: number;
+        totalChunks: number;
+        uploadedChunks?: number[];
+      } = uploadSession;
+      const uploadedChunkIndexes = new Set(uploadedChunks);
+      const missingChunkIndexes = Array.from(
+        { length: totalChunks },
+        (_unused, chunkIndex) => chunkIndex
+      ).filter((chunkIndex) => !uploadedChunkIndexes.has(chunkIndex));
+      let completedChunkCount = uploadedChunkIndexes.size;
 
       try {
-        for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+        updateUploadQueueItem(queueId, {
+          progress: Math.round((completedChunkCount / totalChunks) * 90),
+          status: "uploading",
+        });
+
+        const uploadSingleChunk = async (chunkIndex: number) => {
           if (signal.aborted) {
             throw createAbortError();
           }
@@ -452,22 +538,66 @@ function PureMultimodalInput({
           formData.append("chunkIndex", String(chunkIndex));
           formData.append("chunk", file.slice(start, end));
 
-          const chunkResponse = await fetch(`${basePath}/api/files/chunked/chunk`, {
-            method: "POST",
-            signal,
-            body: formData,
-          });
+          for (
+            let attempt = 0;
+            attempt <= CHUNK_UPLOAD_RETRY_LIMIT;
+            attempt += 1
+          ) {
+            try {
+              const chunkResponse = await fetch(
+                `${basePath}/api/files/chunked/chunk`,
+                {
+                  method: "POST",
+                  signal,
+                  body: formData,
+                }
+              );
 
-          if (!chunkResponse.ok) {
-            const { error } = await chunkResponse.json();
-            throw new Error(error ?? `Failed to upload chunk ${chunkIndex + 1}`);
+              if (!chunkResponse.ok) {
+                throw new Error(
+                  await getResponseError(
+                    chunkResponse,
+                    `Failed to upload chunk ${chunkIndex + 1}`
+                  )
+                );
+              }
+
+              completedChunkCount += 1;
+              updateUploadQueueItem(queueId, {
+                progress: Math.round((completedChunkCount / totalChunks) * 90),
+                status: "uploading",
+              });
+              return;
+            } catch (error) {
+              if (isAbortError(error) || signal.aborted) {
+                throw createAbortError();
+              }
+
+              if (attempt >= CHUNK_UPLOAD_RETRY_LIMIT) {
+                throw error;
+              }
+
+              await waitBeforeRetry(RETRY_BASE_DELAY_MS * (attempt + 1), signal);
+            }
           }
+        };
 
-          updateUploadQueueItem(queueId, {
-            progress: Math.round(((chunkIndex + 1) / totalChunks) * 90),
-            status: "uploading",
-          });
-        }
+        let nextChunkCursor = 0;
+        const uploadWorker = async () => {
+          while (nextChunkCursor < missingChunkIndexes.length) {
+            const chunkIndex = missingChunkIndexes[nextChunkCursor];
+            nextChunkCursor += 1;
+            await uploadSingleChunk(chunkIndex);
+          }
+        };
+        const workerCount = Math.min(
+          CHUNK_UPLOAD_CONCURRENCY,
+          missingChunkIndexes.length
+        );
+
+        await Promise.all(
+          Array.from({ length: workerCount }, () => uploadWorker())
+        );
 
         updateUploadQueueItem(queueId, {
           progress: 95,
@@ -485,13 +615,17 @@ function PureMultimodalInput({
         );
 
         if (!completeResponse.ok) {
-          const { error } = await completeResponse.json();
-          throw new Error(error ?? "Failed to complete upload");
+          throw new Error(
+            await getResponseError(completeResponse, "Failed to complete upload")
+          );
         }
 
         return completeResponse.json();
       } catch (error) {
-        await cancelChunkedUpload();
+        if (isAbortError(error) || signal.aborted) {
+          await cancelChunkedUpload();
+        }
+
         throw error;
       }
     },

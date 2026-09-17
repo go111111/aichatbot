@@ -56,6 +56,7 @@ export const postRequestBodySchema = z
     messages: z.array(toolApprovalMessageSchema).optional(),
     selectedChatModel: z.string().min(1).max(100),
     selectedVisibilityType: z.enum(["public", "private"]),
+    selectedDocumentIds: z.array(z.string().uuid()).optional().default([]),
     stream: z.boolean().optional().default(true),
     requestId: z.string().uuid().optional(),
   })

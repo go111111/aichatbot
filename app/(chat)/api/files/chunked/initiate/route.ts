@@ -10,13 +10,18 @@ import {
   getContentType,
   getSafeFilename,
 } from "@/lib/files/upload";
-import { deleteChunkedUpload, saveManifest } from "@/lib/files/chunked-upload";
+import {
+  deleteChunkedUpload,
+  findReusableManifest,
+  saveManifest,
+} from "@/lib/files/chunked-upload";
 
 const InitiateSchema = z.object({
   filename: z.string().min(1).max(255),
   contentType: z.string().optional().default(""),
   size: z.number().int().positive().max(CHUNKED_UPLOAD_MAX_BYTES),
   chatId: z.string().uuid().optional().nullable(),
+  fingerprint: z.string().min(1).max(512).optional(),
 });
 
 const CancelSchema = z.object({
@@ -36,7 +41,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid upload metadata" }, { status: 400 });
   }
 
-  const { filename, size, chatId } = parsed.data;
+  const { filename, size, chatId, fingerprint } = parsed.data;
   const contentType = getContentType({ type: parsed.data.contentType }, filename);
 
   if (!contentType) {
@@ -55,8 +60,25 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const uploadId = randomUUID();
   const totalChunks = Math.ceil(size / CHUNKED_UPLOAD_CHUNK_BYTES);
+  const reusableManifest = await findReusableManifest({
+    userId: session.user.id,
+    chatId: chatId ?? null,
+    contentType,
+    size,
+    fingerprint,
+  });
+
+  if (reusableManifest) {
+    return NextResponse.json({
+      uploadId: reusableManifest.uploadId,
+      chunkSize: CHUNKED_UPLOAD_CHUNK_BYTES,
+      totalChunks: reusableManifest.totalChunks,
+      uploadedChunks: reusableManifest.receivedChunks,
+    });
+  }
+
+  const uploadId = randomUUID();
 
   await saveManifest({
     uploadId,
@@ -68,6 +90,7 @@ export async function POST(request: Request) {
     size,
     totalChunks,
     receivedChunks: [],
+    fingerprint,
     createdAt: new Date().toISOString(),
   });
 
@@ -75,6 +98,7 @@ export async function POST(request: Request) {
     uploadId,
     chunkSize: CHUNKED_UPLOAD_CHUNK_BYTES,
     totalChunks,
+    uploadedChunks: [],
   });
 }
 

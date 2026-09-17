@@ -46,6 +46,8 @@ type ActiveChatContextValue = {
   votes: Vote[] | undefined;
   currentModelId: string;
   setCurrentModelId: (id: string) => void;
+  selectedDocumentIds: string[];
+  setSelectedDocumentIds: Dispatch<SetStateAction<string[]>>;
   showCreditCardAlert: boolean;
   setShowCreditCardAlert: Dispatch<SetStateAction<boolean>>;
 };
@@ -75,10 +77,17 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
   const chatId = chatIdFromUrl ?? newChatIdRef.current;
 
   const [currentModelId, setCurrentModelId] = useState(DEFAULT_CHAT_MODEL);
+  /** 侧边栏多选的知识库 File.id；发消息时传给 /api/chat 限定 RAG 检索范围 */
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
   const currentModelIdRef = useRef(currentModelId);
+  /** ref 避免 useChat transport 闭包拿到过期的 selectedDocumentIds */
+  const selectedDocumentIdsRef = useRef(selectedDocumentIds);
   useEffect(() => {
     currentModelIdRef.current = currentModelId;
   }, [currentModelId]);
+  useEffect(() => {
+    selectedDocumentIdsRef.current = selectedDocumentIds;
+  }, [selectedDocumentIds]);
 
   const [input, setInput] = useState("");
   const [showCreditCardAlert, setShowCreditCardAlert] = useState(false);
@@ -153,6 +162,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
               : { message: lastMessage }),
             selectedChatModel: currentModelIdRef.current,
             selectedVisibilityType: visibility,
+            selectedDocumentIds: selectedDocumentIdsRef.current,
             stream: true, // 显式启用流式
             ...request.body,
           },
@@ -304,6 +314,8 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       votes,
       currentModelId,
       setCurrentModelId,
+      selectedDocumentIds,
+      setSelectedDocumentIds,
       showCreditCardAlert,
       setShowCreditCardAlert,
     }),
@@ -324,6 +336,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       isLoading,
       votes,
       currentModelId,
+      selectedDocumentIds,
       showCreditCardAlert,
     ]
   );

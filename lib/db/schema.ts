@@ -80,6 +80,7 @@ export const vote = pgTable(
 
 export type Vote = InferSelectModel<typeof vote>;
 
+/** 上传文件：chatId 为 null 表示用户级知识库文档；非 null 为某会话附件 */
 export const file = pgTable("File", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
   userId: uuid("userId")
@@ -91,18 +92,26 @@ export const file = pgTable("File", {
   url: text("url").notNull(),
   mimeType: varchar("mimeType", { length: 128 }).notNull(),
   size: integer("size").notNull(),
+  /** 解析后的全文摘要（有长度上限）；细粒度检索走 FileChunk */
   content: text("content"),
   parseStatus: varchar("parseStatus", {
     enum: ["parsed", "unsupported", "error"],
   })
     .notNull()
     .default("unsupported"),
+  /** 上传/合并/解析生命周期；仅 ready + parseStatus=parsed 参与 RAG */
+  status: varchar("status", {
+    enum: ["uploading", "processing", "ready", "failed"],
+  })
+    .notNull()
+    .default("ready"),
   createdAt: timestamp("createdAt").notNull().defaultNow(),
   updatedAt: timestamp("updatedAt").notNull().defaultNow(),
 });
 
 export type FileRecord = InferSelectModel<typeof file>;
 
+/** RAG 检索单元：按 fileId + chunkIndex 有序；对话时关键词打分 Top-K */
 export const fileChunk = pgTable(
   "FileChunk",
   {

@@ -64,3 +64,15 @@ export type Attachment = {
   parseStatus?: "parsed" | "unsupported" | "error";
   textPreview?: string | null;
 };
+
+export type KnowledgeFile = {
+  id: string;
+  name: string;
+  url: string;
+  contentType: string;
+  size: number;
+  status: "uploading" | "processing" | "ready" | "failed";
+  parseStatus: "parsed" | "unsupported" | "error";
+  createdAt: string;
+  updatedAt: string;
+};

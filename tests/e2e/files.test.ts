@@ -51,12 +51,15 @@ test.describe("Protected file API", () => {
     const chunkSize = 4 * 1024 * 1024;
     const content = Buffer.alloc(21 * 1024 * 1024, "a");
     content.write("chunked upload knowledge marker", 0, "utf8");
+    const filename = `large-knowledge-${Date.now()}.txt`;
+    const fingerprint = `test-${randomUUID()}`;
 
     const initiateResponse = await request.post("/api/files/chunked/initiate", {
       data: JSON.stringify({
-        filename: `large-knowledge-${Date.now()}.txt`,
+        filename,
         contentType: "text/plain",
         size: content.byteLength,
+        fingerprint,
       }),
       headers: { "Content-Type": "application/json" },
     });
@@ -67,6 +70,7 @@ test.describe("Protected file API", () => {
 
     expect(uploadSession.chunkSize).toBe(chunkSize);
     expect(uploadSession.totalChunks).toBeGreaterThan(1);
+    expect(uploadSession.uploadedChunks).toEqual([]);
 
     for (
       let chunkIndex = 0;
@@ -88,6 +92,26 @@ test.describe("Protected file API", () => {
       });
 
       expect(chunkResponse.ok()).toBe(true);
+
+      const chunkUploadResult = await chunkResponse.json();
+      expect(chunkUploadResult.uploadedChunks).toContain(chunkIndex);
+
+      if (chunkIndex === 0) {
+        const resumeResponse = await request.post("/api/files/chunked/initiate", {
+          data: JSON.stringify({
+            filename,
+            contentType: "text/plain",
+            size: content.byteLength,
+            fingerprint,
+          }),
+          headers: { "Content-Type": "application/json" },
+        });
+        const resumeSession = await resumeResponse.json();
+
+        expect(resumeResponse.ok()).toBe(true);
+        expect(resumeSession.uploadId).toBe(uploadSession.uploadId);
+        expect(resumeSession.uploadedChunks).toEqual([0]);
+      }
     }
 
     const completeResponse = await request.post("/api/files/chunked/complete", {
