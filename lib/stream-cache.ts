@@ -1,3 +1,13 @@
+/**
+ * 进行中的 AI 流式输出在 Redis 里的短缓存（非 RAG chunk、非消息持久化）。
+ *
+ * 键结构（每条 assistant 消息一条流）：
+ *   chat:stream:{conversationId}:{messageId}:meta  — Hash（status、requestId、offset）
+ *   chat:stream:{conversationId}:{messageId}:chunks — List（已推送的 text/reasoning 片段 JSON）
+ *
+ * 持久化在 PostgreSQL Message_v2；断线重连时 getStreamSnapshot 按 offset 补拉。
+ * 未配置 Redis 时所有方法 no-op，不影响主流程。
+ */
 import "server-only";
 
 import { getRedisClient } from "./redis";

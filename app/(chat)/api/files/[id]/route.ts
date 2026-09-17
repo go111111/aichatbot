@@ -20,6 +20,7 @@ function getContentDisposition(filename: string) {
   return `inline; filename="${fallbackFilename}"; filename*=UTF-8''${encodedFilename}`;
 }
 
+/** 知识库文件只校验 userId；会话附件额外校验 chat 归属当前用户 */
 async function getOwnedFile({
   id,
   userId,
