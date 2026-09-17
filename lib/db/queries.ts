@@ -9,6 +9,7 @@ import {
   gt,
   gte,
   inArray,
+  isNull,
   lt,
   type SQL,
 } from "drizzle-orm";
@@ -552,6 +553,7 @@ export async function saveUploadedFile({
   size,
   content,
   parseStatus,
+  status = "ready",
 }: {
   id?: string;
   userId: string;
@@ -563,6 +565,7 @@ export async function saveUploadedFile({
   size: number;
   content?: string | null;
   parseStatus: FileRecord["parseStatus"];
+  status?: FileRecord["status"];
 }) {
   const now = new Date();
 
@@ -578,6 +581,7 @@ export async function saveUploadedFile({
       size,
       content: content ?? null,
       parseStatus,
+      status,
       createdAt: now,
       updatedAt: now,
     };
@@ -599,12 +603,76 @@ export async function saveUploadedFile({
         size,
         content: content ?? null,
         parseStatus,
+        status,
         createdAt: now,
         updatedAt: now,
       })
       .returning();
   } catch (_error) {
     throw new ChatbotError("bad_request:database", "Failed to save file");
+  }
+}
+
+export async function getKnowledgeFilesByUser({ userId }: { userId: string }) {
+  if (useMemoryDb) {
+    return memoryDb.files
+      .filter(
+        (currentFile) =>
+          currentFile.userId === userId && currentFile.chatId === null
+      )
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  try {
+    return await db
+      .select()
+      .from(file)
+      .where(and(eq(file.userId, userId), isNull(file.chatId)))
+      .orderBy(desc(file.createdAt));
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get knowledge files"
+    );
+  }
+}
+
+export async function getKnowledgeFilesByIdsForUser({
+  ids,
+  userId,
+}: {
+  ids: string[];
+  userId: string;
+}) {
+  if (ids.length === 0) {
+    return [];
+  }
+
+  if (useMemoryDb) {
+    return memoryDb.files.filter(
+      (currentFile) =>
+        ids.includes(currentFile.id) &&
+        currentFile.userId === userId &&
+        currentFile.chatId === null
+    );
+  }
+
+  try {
+    return await db
+      .select()
+      .from(file)
+      .where(
+        and(
+          inArray(file.id, ids),
+          eq(file.userId, userId),
+          isNull(file.chatId)
+        )
+      );
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get knowledge files"
+    );
   }
 }
 

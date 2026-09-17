@@ -4,7 +4,7 @@ import { RefreshCcwIcon } from "lucide-react";
 import { memo } from "react";
 import { toast } from "sonner";
 import { useSWRConfig } from "swr";
-import { useCopyToClipboard } from "usehooks-ts";
+import { writeTextToClipboard } from "@/lib/clipboard";
 import type { Vote } from "@/lib/db/schema";
 import type { ChatMessage } from "@/lib/types";
 import {
@@ -31,7 +31,6 @@ export function PureMessageActions({
   regenerate: UseChatHelpers<ChatMessage>["regenerate"];
 }) {
   const { mutate } = useSWRConfig();
-  const [_, copyToClipboard] = useCopyToClipboard();
 
   if (isLoading) {
     return null;
@@ -49,8 +48,12 @@ export function PureMessageActions({
       return;
     }
 
-    await copyToClipboard(textFromParts);
-    toast.success("Copied to clipboard!");
+    try {
+      await writeTextToClipboard(textFromParts);
+      toast.success("Copied to clipboard!");
+    } catch {
+      toast.error("Clipboard permission denied");
+    }
   };
 
   const handleRegenerate = async () => {

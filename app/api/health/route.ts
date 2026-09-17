@@ -1,3 +1,10 @@
+/**
+ * GET /api/health — 部署探活（Docker / Nginx / 监控用）
+ *
+ * 聚合检查：PostgreSQL、Redis、模型 API Key、本地上传目录可写。
+ * - production：缺 PG/Redis 记为 error，HTTP 503
+ * - development：缺 PG/Redis 可 degraded，仍返回 200，便于无依赖本地跑 UI
+ */
 import { constants } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -103,6 +110,7 @@ async function checkRedis(): Promise<HealthCheck> {
     : { status: "error", detail: "redis unavailable" };
 }
 
+/** 任一 error → 整体 error；否则有 degraded → degraded；全 ok → ok */
 function getOverallStatus(checks: Record<string, HealthCheck>) {
   if (Object.values(checks).some((check) => check.status === "error")) {
     return "error";

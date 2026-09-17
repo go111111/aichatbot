@@ -1,3 +1,7 @@
+/**
+ * 生产环境按客户端 IP 限制 /api/chat 调用频率（与登录用户配额 entitlements 互补）。
+ * 滑动窗口近似实现：INCR + 首次 EXPIRE 1h；超过 MAX_MESSAGES 抛 rate_limit:chat。
+ */
 import { isProductionEnvironment } from "@/lib/constants";
 import { ChatbotError } from "@/lib/errors";
 import { getRedisClient } from "@/lib/redis";

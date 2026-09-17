@@ -7,6 +7,8 @@ import { useSWRConfig } from "swr";
 import { unstable_serialize } from "swr/infinite";
 import { Button } from "@/components/ui/button";
 import { useSidebar } from "@/components/ui/sidebar";
+import { writeTextToClipboard } from "@/lib/clipboard";
+import { KnowledgeDocumentPicker } from "./knowledge-document-picker";
 import { getChatHistoryPaginationKey } from "./sidebar-history";
 import { ShareIcon } from "./icons";
 import { RenameChatDialog } from "./rename-chat-dialog";
@@ -36,8 +38,13 @@ function PureChatHeader({
 
     const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
     const url = `${window.location.origin}${basePath}/chat/${chatId}`;
-    await navigator.clipboard.writeText(url);
-    toast.success("Share link copied");
+
+    try {
+      await writeTextToClipboard(url);
+      toast.success("Share link copied");
+    } catch {
+      toast.error("Clipboard permission denied");
+    }
   };
 
   if (state === "collapsed" && !isMobile) {
@@ -76,6 +83,7 @@ function PureChatHeader({
 
       {!isReadonly && (
         <div className="flex shrink-0 items-center gap-2">
+          <KnowledgeDocumentPicker />
           <VisibilitySelector
             chatId={chatId}
             selectedVisibilityType={selectedVisibilityType}

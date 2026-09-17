@@ -29,6 +29,7 @@ import {
   getFileChunksByFileIdsForUser,
   getFilesByChatIdForUser,
   getFilesByIdsForUser,
+  getKnowledgeFilesByIdsForUser,
   getMessageById,
   getMessageCountByUserId,
   getMessagesByChatId,
@@ -51,15 +52,30 @@ import { convertToUIMessages, generateUUID } from "@/lib/utils";
 import { generateTitleFromUserMessage } from "../../actions";
 import { type PostRequestBody, postRequestBodySchema } from "./schema";
 
+/** Vercel/Serverless 上单次请求最长执行时间（秒），流式对话需足够大 */
 export const maxDuration = 60;
 
 const stoppedResponseText = "Generation stopped.";
 const failedResponseText =
   "I couldn't complete this response. It may be a network issue or the model provider is temporarily unavailable. Please try again or regenerate the response.";
-const KNOWLEDGE_TOP_K = 5;
+/** RAG：最终注入 prompt 的 chunk 上限；主命中块数；无关键词命中时的兜底块数 */
+const KNOWLEDGE_TOP_K = 6;
+const PRIMARY_KNOWLEDGE_CHUNK_COUNT = 3;
 const FALLBACK_CHUNK_COUNT = 3;
 const LEGACY_CHUNK_CHAR_LENGTH = 1200;
 const LEGACY_CHUNK_OVERLAP_CHARS = 150;
+const KEYWORD_OCCURRENCE_CAP = 3;
+
+type WeightedKeyword = {
+  keyword: string;
+  weight: number;
+};
+
+type RankedKnowledgeChunk = {
+  chunk: FileChunk;
+  score: number;
+  matchedKeywordCount: number;
+};
 
 function getStreamContext() {
   try {
@@ -71,6 +87,7 @@ function getStreamContext() {
 
 export { getStreamContext };
 
+/** 本回合消息里附带的 file part（会话内上传），与侧边栏 selectedDocumentIds 知识库文档分开鉴权 */
 function getReferencedFileIds(message?: ChatMessage) {
   if (!message) {
     return [];
@@ -97,16 +114,27 @@ function getUserQuestionText(message?: ChatMessage) {
     .join("\n");
 }
 
-function addKeyword(keywords: Map<string, number>, keyword: string) {
+function addKeyword(
+  keywords: Map<string, number>,
+  keyword: string,
+  weight = 1
+) {
   const normalizedKeyword = keyword.toLowerCase().trim();
 
   if (normalizedKeyword.length < 2) {
     return;
   }
 
-  keywords.set(normalizedKeyword, (keywords.get(normalizedKeyword) ?? 0) + 1);
+  keywords.set(
+    normalizedKeyword,
+    (keywords.get(normalizedKeyword) ?? 0) + weight
+  );
 }
 
+/**
+ * 轻量 lexical 检索：从用户问题抽加权关键词（英 token + 中文 n-gram），供 scoreChunk 使用。
+ * 企业级可替换为 embedding + pgvector，接口保持在 buildRetrievedKnowledgeContext。
+ */
 function extractKeywords(text: string) {
   const keywords = new Map<string, number>();
   const englishTokens = text.toLowerCase().match(/[a-z0-9][a-z0-9_-]{1,}/g) ?? [];
@@ -130,17 +158,20 @@ function extractKeywords(text: string) {
     "总结",
     "如何",
     "怎么",
+    "什么",
+    "为什么",
+    "说明",
   ]);
 
   for (const token of englishTokens) {
     if (!stopwords.has(token)) {
-      addKeyword(keywords, token);
+      addKeyword(keywords, token, token.length >= 4 ? 2 : 1);
     }
   }
 
   for (const segment of cjkSegments) {
-    if (!stopwords.has(segment)) {
-      addKeyword(keywords, segment);
+    if (!stopwords.has(segment) && segment.length <= 12) {
+      addKeyword(keywords, segment, Math.min(4, Math.ceil(segment.length / 3)));
     }
 
     for (let index = 0; index < segment.length - 1; index += 1) {
@@ -153,15 +184,15 @@ function extractKeywords(text: string) {
     for (let index = 0; index < segment.length - 2; index += 1) {
       const trigram = segment.slice(index, index + 3);
       if (!stopwords.has(trigram)) {
-        addKeyword(keywords, trigram);
+        addKeyword(keywords, trigram, 2);
       }
     }
   }
 
   return Array.from(keywords.entries())
     .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
-    .slice(0, 16)
-    .map(([keyword]) => keyword);
+    .slice(0, 20)
+    .map(([keyword, weight]) => ({ keyword, weight }));
 }
 
 function countOccurrences(content: string, keyword: string) {
@@ -182,16 +213,129 @@ function countOccurrences(content: string, keyword: string) {
   return count;
 }
 
-function scoreChunk(content: string, keywords: string[]) {
+/** 单 chunk 相关性：词频 capped + log 平滑 + 短语 bonus + 关键词覆盖率 */
+function scoreChunk(content: string, keywords: WeightedKeyword[]) {
   const normalizedContent = content.toLowerCase();
+  let matchedKeywordCount = 0;
+  const score = keywords.reduce((currentScore, keyword) => {
+    const occurrences = Math.min(
+      countOccurrences(normalizedContent, keyword.keyword),
+      KEYWORD_OCCURRENCE_CAP
+    );
 
-  return keywords.reduce((score, keyword) => {
-    const occurrences = countOccurrences(normalizedContent, keyword);
-    const weight = keyword.length >= 4 ? 2 : 1;
-    return score + occurrences * weight;
+    if (occurrences === 0) {
+      return currentScore;
+    }
+
+    matchedKeywordCount += 1;
+    const occurrenceScore = 1 + Math.log2(occurrences + 1);
+    const phraseBonus = keyword.keyword.length >= 4 ? 1 : 0;
+    return currentScore + occurrenceScore * keyword.weight + phraseBonus;
   }, 0);
+
+  if (matchedKeywordCount === 0) {
+    return { matchedKeywordCount, score: 0 };
+  }
+
+  const coverageScore =
+    (matchedKeywordCount / Math.min(keywords.length, 8)) * 6;
+  return {
+    matchedKeywordCount,
+    score: score + coverageScore,
+  };
 }
 
+function getChunkKey(chunk: FileChunk) {
+  return `${chunk.fileId}:${chunk.chunkIndex}`;
+}
+
+function sortByChunkPosition(a: RankedKnowledgeChunk, b: RankedKnowledgeChunk) {
+  return (
+    a.chunk.fileId.localeCompare(b.chunk.fileId) ||
+    a.chunk.chunkIndex - b.chunk.chunkIndex
+  );
+}
+
+/**
+ * 在高分 chunk 周围扩展 ±1 邻块，避免答案被 chunk 边界截断；去重后取 Top KNOWLEDGE_TOP_K。
+ */
+function selectContextualChunks({
+  availableChunks,
+  rankedChunks,
+}: {
+  availableChunks: FileChunk[];
+  rankedChunks: RankedKnowledgeChunk[];
+}) {
+  const chunkByKey = new Map(
+    availableChunks.map((chunk) => [getChunkKey(chunk), chunk])
+  );
+  const rankedByKey = new Map(
+    rankedChunks.map((rankedChunk) => [
+      getChunkKey(rankedChunk.chunk),
+      rankedChunk,
+    ])
+  );
+  const primaryChunks: RankedKnowledgeChunk[] = [];
+
+  for (const rankedChunk of rankedChunks) {
+    if (rankedChunk.score <= 0) {
+      break;
+    }
+
+    const isNearExistingPrimary = primaryChunks.some(
+      (currentChunk) =>
+        currentChunk.chunk.fileId === rankedChunk.chunk.fileId &&
+        Math.abs(currentChunk.chunk.chunkIndex - rankedChunk.chunk.chunkIndex) <=
+          1
+    );
+
+    if (isNearExistingPrimary) {
+      continue;
+    }
+
+    primaryChunks.push(rankedChunk);
+
+    if (primaryChunks.length >= PRIMARY_KNOWLEDGE_CHUNK_COUNT) {
+      break;
+    }
+  }
+
+  const selectedByKey = new Map<string, RankedKnowledgeChunk>();
+
+  for (const primaryChunk of primaryChunks) {
+    for (const offset of [-1, 0, 1]) {
+      const chunkKey = `${primaryChunk.chunk.fileId}:${
+        primaryChunk.chunk.chunkIndex + offset
+      }`;
+      const neighborChunk = chunkByKey.get(chunkKey);
+
+      if (!neighborChunk || selectedByKey.has(chunkKey)) {
+        continue;
+      }
+
+      selectedByKey.set(
+        chunkKey,
+        rankedByKey.get(chunkKey) ?? {
+          chunk: neighborChunk,
+          score: Math.round(primaryChunk.score * 0.35 * 100) / 100,
+          matchedKeywordCount: 0,
+        }
+      );
+    }
+  }
+
+  return Array.from(selectedByKey.values())
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.matchedKeywordCount - a.matchedKeywordCount ||
+        sortByChunkPosition(a, b)
+    )
+    .slice(0, KNOWLEDGE_TOP_K)
+    .sort(sortByChunkPosition);
+}
+
+/** 旧数据仅有 File.content、无 FileChunk 行时，请求内按固定窗临时切分（与 upload.ts 入库分片参数对齐） */
 function createLegacyChunksFromFiles(files: FileRecord[]) {
   const parsedFiles = files.filter(
     (currentFile) => currentFile.parseStatus === "parsed" && currentFile.content
@@ -232,6 +376,7 @@ function createLegacyChunksFromFiles(files: FileRecord[]) {
   });
 }
 
+/** 组装 <retrieved_knowledge> 文本：打分 → 选块 → 带文件名/chunk 序号/score 的 Markdown 片段 */
 function buildRetrievedKnowledgeContext({
   files,
   chunks,
@@ -254,23 +399,32 @@ function buildRetrievedKnowledgeContext({
 
   const keywords = extractKeywords(questionText);
   const rankedChunks = availableChunks
-    .map((chunk) => ({
-      chunk,
-      score: keywords.length > 0 ? scoreChunk(chunk.content, keywords) : 0,
-    }))
+    .map((chunk) => {
+      const scoredChunk =
+        keywords.length > 0
+          ? scoreChunk(chunk.content, keywords)
+          : { matchedKeywordCount: 0, score: 0 };
+
+      return {
+        chunk,
+        ...scoredChunk,
+      };
+    })
     .sort(
       (a, b) =>
         b.score - a.score ||
+        b.matchedKeywordCount - a.matchedKeywordCount ||
         a.chunk.fileId.localeCompare(b.chunk.fileId) ||
         a.chunk.chunkIndex - b.chunk.chunkIndex
     );
 
   const hasKeywordHit = rankedChunks.some((rankedChunk) => rankedChunk.score > 0);
   const selectedChunks = hasKeywordHit
-    ? rankedChunks.slice(0, KNOWLEDGE_TOP_K)
+    ? selectContextualChunks({ availableChunks, rankedChunks })
     : availableChunks.slice(0, FALLBACK_CHUNK_COUNT).map((chunk) => ({
         chunk,
         score: 0,
+        matchedKeywordCount: 0,
       }));
 
   return selectedChunks
@@ -378,6 +532,7 @@ export async function POST(request: Request) {
       messages,
       selectedChatModel,
       selectedVisibilityType,
+      selectedDocumentIds,
       stream = true,
       requestId: providedRequestId
     } = requestBody;
@@ -533,6 +688,7 @@ export async function POST(request: Request) {
       requestId: streamRequestId,
     };
 
+    // 先落库 assistant 占位（pending）并清空 Redis 流键，便于断线按 messageId 恢复
     if (!isToolApprovalFlow) {
       await saveMessages({
         messages: [
@@ -558,7 +714,11 @@ export async function POST(request: Request) {
     const isReasoningModel = capabilities?.reasoning === true;
     const supportsTools = capabilities?.tools === true;
     const supportsVision = capabilities?.vision === true;
+    // —— RAG 数据源：会话附件 fileId + 侧边栏多选知识库（File.chatId === null）——
     const referencedFileIds = getReferencedFileIds(userMessage);
+    const selectedKnowledgeFileIds = Array.from(
+      new Set(selectedDocumentIds ?? [])
+    );
     const referencedFiles =
       referencedFileIds.length > 0
         ? await getFilesByIdsForUser({
@@ -575,6 +735,25 @@ export async function POST(request: Request) {
       ).toResponse();
     }
 
+    const selectedKnowledgeFiles =
+      selectedKnowledgeFileIds.length > 0
+        ? await getKnowledgeFilesByIdsForUser({
+            ids: selectedKnowledgeFileIds,
+            userId: session.user.id,
+          })
+        : [];
+
+    if (selectedKnowledgeFiles.length !== selectedKnowledgeFileIds.length) {
+      return new ChatbotError(
+        "forbidden:upload",
+        "One or more selected documents do not belong to your knowledge base."
+      ).toResponse();
+    }
+
+    const readyKnowledgeFiles = selectedKnowledgeFiles.filter(
+      (currentFile) =>
+        currentFile.status === "ready" && currentFile.parseStatus === "parsed"
+    );
     const referencedChunks =
       referencedFileIds.length > 0
         ? await getFileChunksByFileIdsForUser({
@@ -583,9 +762,16 @@ export async function POST(request: Request) {
             chatId: conversationId,
           })
         : [];
+    const selectedKnowledgeChunks =
+      readyKnowledgeFiles.length > 0
+        ? await getFileChunksByFileIdsForUser({
+            fileIds: readyKnowledgeFiles.map((currentFile) => currentFile.id),
+            userId: session.user.id,
+          })
+        : [];
     const knowledgeContext = buildRetrievedKnowledgeContext({
-      files: referencedFiles,
-      chunks: referencedChunks,
+      files: [...referencedFiles, ...readyKnowledgeFiles],
+      chunks: [...referencedChunks, ...selectedKnowledgeChunks],
       questionText: getUserQuestionText(userMessage),
     });
     const attachmentContext = buildAttachmentContext({
@@ -605,7 +791,7 @@ export async function POST(request: Request) {
         ? `<attached_files>\n${attachmentContext}\n</attached_files>`
         : "",
       knowledgeContext
-        ? `Use the following retrieved knowledge chunks when they are relevant. If the chunks are not relevant, answer normally.\n\n<retrieved_knowledge>\n${knowledgeContext}\n</retrieved_knowledge>`
+        ? `Use the following retrieved knowledge chunks when they are relevant. If you use any chunk, end the answer with a concise "引用来源：" line that lists the source document names. Do not invent source names. If the chunks are not relevant, answer normally.\n\n<retrieved_knowledge>\n${knowledgeContext}\n</retrieved_knowledge>`
         : "",
     ]
       .filter(Boolean)

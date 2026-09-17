@@ -57,6 +57,7 @@ export async function POST(request: Request) {
       uploadId: manifest.uploadId,
       chunkIndex: parsed.data.chunkIndex,
       receivedChunks: manifest.receivedChunks.length,
+      uploadedChunks: manifest.receivedChunks,
       totalChunks: manifest.totalChunks,
     });
   } catch (error) {

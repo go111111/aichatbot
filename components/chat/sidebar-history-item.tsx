@@ -2,6 +2,7 @@ import Link from "next/link";
 import { memo } from "react";
 import { toast } from "sonner";
 import { useChatVisibility } from "@/hooks/use-chat-visibility";
+import { writeTextToClipboard } from "@/lib/clipboard";
 import type { Chat } from "@/lib/db/schema";
 import {
   DropdownMenu,
@@ -48,8 +49,13 @@ const PureChatItem = ({
   const copyShareLink = async () => {
     const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
     const url = `${window.location.origin}${basePath}/chat/${chat.id}`;
-    await navigator.clipboard.writeText(url);
-    toast.success("Share link copied");
+
+    try {
+      await writeTextToClipboard(url);
+      toast.success("Share link copied");
+    } catch {
+      toast.error("Clipboard permission denied");
+    }
   };
 
   return (

@@ -1,3 +1,8 @@
+/**
+ * 上传入库：解析（PDF / 文本 / OCR）→ File 行 → chunkTextContent → FileChunk 行。
+ * url 一律 /api/files/{id}，禁止暴露 uploads 静态直链。
+ * chatId 传 null 时写入用户知识库；传会话 id 时为聊天附件。
+ */
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -11,6 +16,7 @@ import { getUploadDir } from "./storage";
 
 export { getUploadDir };
 
+/** ≤20MB 直传；20–100MB 走 lib/files/chunked-upload.ts 分片合并后再调 persistUploadedFile */
 export const STANDARD_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
 export const CHUNKED_UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
 export const CHUNKED_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
@@ -18,7 +24,22 @@ export const CHUNKED_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
 const MAX_PARSED_TEXT_CHARS = 200_000;
 const MAX_TEXT_PARSE_BYTES = MAX_PARSED_TEXT_CHARS * 4;
 const CHUNK_CHAR_LENGTH = 1200;
+const MIN_SEMANTIC_CHUNK_CHARS = 600;
 const CHUNK_OVERLAP_CHARS = 150;
+const SEMANTIC_BOUNDARY_MARKERS = [
+  "\n\n",
+  "\n",
+  "\u3002",
+  "\uff01",
+  "\uff1f",
+  ".",
+  "!",
+  "?",
+  ";",
+  "\uff1b",
+  "\uff0c",
+  ",",
+];
 
 const ALLOWED_CONTENT_TYPES = new Set([
   "image/jpeg",
@@ -302,6 +323,7 @@ export async function parseUploadContent({
   }
 }
 
+/** 定长约 1200 字 + 在句号/换行等边界切分 + 150 字 overlap，供 RAG 检索 */
 export function chunkTextContent(content: string) {
   const normalizedContent = content.replace(/\r\n/g, "\n").trim();
 
@@ -318,7 +340,11 @@ export function chunkTextContent(content: string) {
   let chunkIndex = 0;
 
   while (start < normalizedContent.length) {
-    const end = Math.min(start + CHUNK_CHAR_LENGTH, normalizedContent.length);
+    const hardEnd = Math.min(start + CHUNK_CHAR_LENGTH, normalizedContent.length);
+    const end =
+      hardEnd >= normalizedContent.length
+        ? hardEnd
+        : findSemanticChunkEnd(normalizedContent, start, hardEnd);
     const chunk = normalizedContent.slice(start, end).trim();
 
     if (chunk) {
@@ -330,7 +356,7 @@ export function chunkTextContent(content: string) {
       chunkIndex += 1;
     }
 
-    if (end >= normalizedContent.length) {
+    if (hardEnd >= normalizedContent.length) {
       break;
     }
 
@@ -340,6 +366,23 @@ export function chunkTextContent(content: string) {
   return chunks;
 }
 
+function findSemanticChunkEnd(content: string, start: number, hardEnd: number) {
+  const minEnd = Math.min(start + MIN_SEMANTIC_CHUNK_CHARS, hardEnd);
+  let bestEnd = -1;
+
+  for (const marker of SEMANTIC_BOUNDARY_MARKERS) {
+    const boundaryIndex = content.lastIndexOf(marker, hardEnd);
+    const candidateEnd = boundaryIndex + marker.length;
+
+    if (boundaryIndex >= minEnd && candidateEnd > bestEnd) {
+      bestEnd = candidateEnd;
+    }
+  }
+
+  return bestEnd > start ? bestEnd : hardEnd;
+}
+
+/** 解析完成后写 File；成功解析则同步写入 FileChunk（无异步队列） */
 export async function persistUploadedFile({
   userId,
   chatId,
@@ -362,6 +405,7 @@ export async function persistUploadedFile({
   const parsed = await parseUploadContent({ contentType, buffer, filePath });
   const fileId = randomUUID();
   const protectedUrl = `/api/files/${fileId}`;
+  const status = parsed.parseStatus === "error" ? "failed" : "ready";
   const [savedFile] = await saveUploadedFile({
     id: fileId,
     userId,
@@ -373,6 +417,7 @@ export async function persistUploadedFile({
     size,
     content: parsed.content,
     parseStatus: parsed.parseStatus,
+    status,
   });
   const chunks = parsed.content ? chunkTextContent(parsed.content) : [];
 
@@ -395,6 +440,7 @@ export async function persistUploadedFile({
     pathname: getSafeFilename(originalName),
     contentType,
     size,
+    status: savedFile.status,
     parseStatus: parsed.parseStatus,
     textPreview: parsed.content?.slice(0, 600) ?? null,
   };
